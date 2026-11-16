@@ -10,7 +10,7 @@ import type { OmpApi, OmpAgentHandle, OmpAgentCreateOptions, OmpAgentObservation
 import { Gateway } from './gateway.ts';
 import { Pairing, StateSchema, StateStore, peerKey, type Peer } from './state.ts';
 import * as media from './media.ts';
-import { testEngineDirectory } from '../tests/game-fixture.ts';
+import { testEngine, testEngineDirectory } from '../tests/game-fixture.ts';
 
 const isolatedHome = vi.hoisted(() => ({ path: null as string | null }));
 vi.mock('node:os', async importOriginal => {
@@ -37,7 +37,8 @@ async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = 
   const storage = { get: async () => ({ revision, values: structuredClone(values) }), patch: async (patch: unknown, expected: number) => { if (expected !== revision) throw new Error('STORAGE_REVISION_CONFLICT'); values = StateSchema.parse(patch); return { revision: ++revision, values }; } } as unknown as PluginStorage;
   const store = new StateStore(storage);
   const old = { id: 'old-agent', stop: vi.fn(async () => {}), refresh: vi.fn(async () => ({ agent: { id: 'old-agent', sandbox: undefined as Peer['sandbox'] } })) };
-  const list = vi.fn(async (_options?: { page?: { cursor?: string } }): Promise<AgentDirectoryFixture> => ({ entries: [await old.refresh()], pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } }));
+  const createdAgents: AgentDirectoryFixture['entries'] = [];
+  const list = vi.fn(async (_options?: { page?: { cursor?: string } }): Promise<AgentDirectoryFixture> => ({ entries: [await old.refresh(), ...createdAgents], pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } }));
   const unsubscribe = vi.fn();
   const fresh = { id: 'new-agent', stop: vi.fn(async () => {}), observe: vi.fn(async () => ({ snapshot: { sandbox: { root }, pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe } as unknown as OmpAgentObservation)) };
   const create = vi.fn(async (_options: OmpAgentCreateOptions) => fresh as unknown as OmpAgentHandle);
@@ -46,6 +47,7 @@ async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = 
   const workspace = (id: string) => ({ id, agents: { create: async (options: OmpAgentCreateOptions) => {
     if (occupiedWorkspaces.has(id)) throw new Error('Workspace already has an unarchived root agent');
     const agent = await create(options);
+    createdAgents.push({ agent: { id: agent.id, sandbox: options.config?.sandbox } });
     occupiedWorkspaces.add(id);
     return agent;
   } } });
@@ -214,6 +216,46 @@ it.each(['legacy', 'confirmed'] as const)('startup recreates a missing %s agent 
   expect(after.modelSelections).toEqual(before.modelSelections);
   expect(after.presetSelections).toEqual(before.presetSelections);
   expect(f.create.mock.calls[0]?.[0].config).toMatchObject({ sandbox: { root: f.root }, modeId: 'ask', provider: 'omp/provider/model', thinkingOptionId: 'high' });
+});
+
+it('replaces a cached route whose Desktop agent disappeared without changing other peers or preferences', async () => {
+  const f = await fixture();
+  const original = await f.internal.getOrCreate('c2c', 'peer');
+  await f.store.mutate(state => {
+    state.peers[peerKey('saved-app', 'group', 'other')] = { ...original.peer, scope: 'group', openid: 'other', agentId: 'other-agent' };
+  });
+  const before = (await f.store.read()).values;
+  f.list.mockResolvedValue({ entries: [], pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } });
+  const replacement = { ...f.fresh, id: 'recovered-agent' };
+  f.create.mockResolvedValue(replacement as unknown as OmpAgentHandle);
+  const recovered = await f.internal.getOrCreate('c2c', 'peer');
+  const after = (await f.store.read()).values;
+  expect(recovered.peer.agentId).toBe('recovered-agent');
+  expect(recovered.peer.workspaceId).not.toBe(original.peer.workspaceId);
+  expect(f.internal.routes.get(f.key)).toBe(recovered);
+  expect(after.peers[f.key]).toMatchObject({ agentId: 'recovered-agent', cwd: f.root, sandbox: original.peer.sandbox });
+  expect(after.peers[peerKey('saved-app', 'group', 'other')]).toEqual(before.peers[peerKey('saved-app', 'group', 'other')]);
+  expect(after.modelSelections).toEqual(before.modelSelections);
+  expect(after.presetSelections).toEqual(before.presetSelections);
+  expect(after.config).toEqual(before.config);
+  expect(after.access).toEqual(before.access);
+  expect(f.unsubscribe).toHaveBeenCalledOnce();
+  expect(f.fresh.stop).not.toHaveBeenCalled();
+  f.list.mockResolvedValue({ entries: [{ agent: { id: replacement.id, sandbox: original.peer.sandbox } }], pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } });
+  expect(await f.internal.getOrCreate('c2c', 'peer')).toBe(recovered);
+});
+
+it('keeps a cached route intact when its existence lookup fails', async () => {
+  const f = await fixture();
+  const original = await f.internal.getOrCreate('c2c', 'peer');
+  const before = (await f.store.read()).values;
+  f.list.mockRejectedValue(new Error('agent directory unavailable'));
+  await expect(f.internal.getOrCreate('c2c', 'peer')).rejects.toThrow('agent directory unavailable');
+  expect(f.internal.routes.get(f.key)).toBe(original);
+  expect((await f.store.read()).values).toEqual(before);
+  expect(f.create).toHaveBeenCalledOnce();
+  expect(f.unsubscribe).not.toHaveBeenCalled();
+  expect(f.fresh.stop).not.toHaveBeenCalled();
 });
 
 it('stops an existing peer found on a later directory page before replacing it', async () => {
@@ -478,12 +520,18 @@ it.each(['observation-failed','unconfirmed-sandbox'] as const)('keeps saved-agen
 });
 it('enabling the trusted host game retires a matching sandbox agent with polluted old context',async()=>{
   const f=await fixture(undefined,'omp',false,undefined,true);
+  const { createGame } = await testEngine(f.root);
+  const game = createGame({ databasePath: join(f.root, 'cutover.sqlite') });
+  // Inject the real host to model startup without opening the installation's saved database.
+  const runtime = f.gateway as unknown as { game: typeof game.host };
+  runtime.game = game.host;
   await f.store.mutate(state=>{state.peers[f.key]=f.saved({root:f.root});});
   f.old.refresh.mockResolvedValue({agent:{id:f.old.id,sandbox:{root:f.root}}});
   Object.assign(f.old,{observe:f.fresh.observe,send:async(_text:string,options:{messageId:string})=>emitReply(f,options.messageId,'{"memory":"","activeTasks":[]}')});
   const route=await f.internal.getOrCreate('c2c','peer');
   expect(f.old.stop).toHaveBeenCalledOnce();expect(route.agent.id).toBe('new-agent');
   expect(route.peer.protocolVersion).toBe(2);
+  expect(route.peer.protocolPrompt).toContain(game.host.protocol.version);
   expect((await f.store.read()).values.peers[f.key]?.agentId).toBe(route.agent.id);
 });
 it('never permits the sandbox to cover host game data',async()=>{

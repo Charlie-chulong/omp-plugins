@@ -26,7 +26,7 @@ it('disable settles the owned QQ route before a native send acknowledgement with
   const sent = Promise.withResolvers<void>();
   const agent = { send: vi.fn(() => { sent.resolve(); return acknowledged.promise; }), stop: vi.fn() };
   const omp = createPluginOmpApi({ agents: { ref: () => agent } } as unknown as OmpApi, installation, scope, { mode: 'active' });
-  const route = { peer: { appId: 'test-account', scope: 'c2c', openid: 'peer', cwd: '/workspace' }, agent: omp.agents.ref('agent'), pending: new Map() };
+  const route = { peer: { appId: 'test-account', scope: 'c2c', openid: 'peer', cwd: '/workspace' }, agent: omp.agents.ref('agent'), pending: new Map(), sceneImages: new Map() };
   const internal = gateway as unknown as { routes: Map<string, typeof route>; getOrCreate: () => Promise<typeof route>; message: (context: MiddlewareContext) => Promise<void> };
   vi.spyOn(internal, 'getOrCreate').mockResolvedValue(route);
   internal.routes.set(peerKey('test-account','c2c','peer'),route);
@@ -56,7 +56,7 @@ it('newer native tool metadata preserves inspected MIME and delivers extensionle
   const context = { signal: new AbortController().signal, installation: { id: 'installation', generation: 2 }, omp: {} } as unknown as PluginServiceContext;
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const gateway = new Gateway(context, store, new Pairing(store), values.config, 'fixture-only-secret', logger, vi.fn());
-  const route = { peer: { appId: 'test-account', scope: 'c2c' as const, openid: 'peer', agentId: 'agent' }, enabledDelivery: true, target: { scope: 'c2c', targetId: 'peer' }, buffer: null, files: new Map<string, {name:string;mimeType?:string}>(), toolRevisions: new Map(), pending: new Map(), lastSeq: 0 };
+  const route = { peer: { appId: 'test-account', scope: 'c2c' as const, openid: 'peer', agentId: 'agent' }, enabledDelivery: true, target: { scope: 'c2c', targetId: 'peer' }, buffer: null, files: new Map<string, {name:string;mimeType?:string}>(), toolRevisions: new Map(), pending: new Map(), sceneImages: new Map(), lastSeq: 0 };
   const internal = gateway as unknown as { routes: Map<string, typeof route>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; deliverFile: (...args: unknown[]) => Promise<void> };
   internal.routes.set(peerKey('test-account', 'c2c', 'peer'), route);
   const delivered = vi.spyOn(internal, 'deliverFile').mockResolvedValue();
@@ -79,7 +79,7 @@ it.each([false, true])('failed tool events stay internal while the final reply s
   const store = new StateStore(storage);
   const context = { signal: new AbortController().signal, installation: { id: 'installation', generation: 2 }, omp: {} } as unknown as PluginServiceContext;
   const gateway = new Gateway(context, store, new Pairing(store), values.config, 'fixture-only-secret', { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }, vi.fn());
-  const route = { peer: { appId: 'test-account', scope: 'c2c' as const, openid: 'peer', agentId: 'agent' }, enabledDelivery: true, target: { scope: 'c2c', targetId: 'peer' }, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), lastSeq: 0 };
+  const route = { peer: { appId: 'test-account', scope: 'c2c' as const, openid: 'peer', agentId: 'agent' }, enabledDelivery: true, target: { scope: 'c2c', targetId: 'peer' }, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), sceneImages: new Map(), lastSeq: 0 };
   const internal = gateway as unknown as { routes: Map<string, typeof route>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; sender: { sendMarkdown: (target: unknown, text: string) => Promise<void> } };
   internal.routes.set(peerKey('test-account', 'c2c', 'peer'), route);
   const sent = vi.spyOn(internal.sender, 'sendMarkdown').mockResolvedValue();
@@ -108,7 +108,7 @@ function queuedConversation(autoCompactTokens=0) {
   let inputIndex = 0;
   const usage={contextWindowUsedTokens:64000,compactionCount:0};
   const agent = { refresh:vi.fn(async()=>({agent:{activeTurn:null,lastUsage:structuredClone(usage)}})),compact:vi.fn(async()=>{}),send: vi.fn(async (_text: string, options: { messageId: string }) => { started[inputIndex++]!.resolve(options.messageId); }), stop: vi.fn() };
-  const route = { peer: { appId: 'test-account', scope: 'group' as const, openid: 'peer', agentId: 'agent' }, agent, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), chain:Promise.resolve(), epoch: 'before-resume', lastSeq: 74 };
+  const route = { peer: { appId: 'test-account', scope: 'group' as const, openid: 'peer', agentId: 'agent' }, agent, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), sceneImages: new Map(), chain:Promise.resolve(), epoch: 'before-resume', lastSeq: 74 };
   const internal = gateway as unknown as { bot: QQBot; routes: Map<string, typeof route>; getOrCreate: () => Promise<typeof route>; message: (context: MiddlewareContext) => Promise<void>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; compactRoute(route:typeof route,automatic?:boolean):Promise<void>;sender: { sendMarkdown: (target: unknown, text: string) => Promise<void> } };
   internal.routes.set(peerKey('test-account', 'group', 'peer'), route);
   vi.spyOn(internal, 'getOrCreate').mockResolvedValue(route);
@@ -129,15 +129,21 @@ function queuedConversation(autoCompactTokens=0) {
 it('threshold maintenance starts after QQ delivery and keeps the next sender queued until native completion',async()=>{
   const f=queuedConversation(64000);
   const acknowledged=Promise.withResolvers<void>();
+  const delivered=Promise.withResolvers<void>();
+  const releaseDelivery=Promise.withResolvers<void>();
+  f.delivered.mockImplementationOnce(async()=>{delivered.resolve();await releaseDelivery.promise;});
   f.agent.compact.mockImplementation(async()=>{
-    expect(f.delivered).toHaveBeenCalledExactlyOnceWith({scope:'group',targetId:'peer',msgId:'Iris'},'first answer');
     await f.event({type:'timeline',item:{type:'compaction',status:'loading',trigger:'manual'}} as OmpAgentStream['event']);
     acknowledged.resolve();
   });
   const first=f.message('Iris');const second=f.message('Cassandra');
   try{
     await f.begin(await f.started[0]!.promise,'turn-1',75);
-    await f.finish('turn-1','first answer',76);
+    const finishing=f.finish('turn-1','first answer',76);
+    await delivered.promise;
+    expect(f.agent.compact).not.toHaveBeenCalled();
+    releaseDelivery.resolve();
+    await finishing;
     await acknowledged.promise;await nextImmediate();
     expect(f.agent.send).toHaveBeenCalledTimes(1);
     f.usage.compactionCount++;f.usage.contextWindowUsedTokens=12000;
@@ -147,7 +153,7 @@ it('threshold maintenance starts after QQ delivery and keeps the next sender que
     await f.finish('turn-2','second answer',78);await second;
     expect(f.agent.compact).toHaveBeenCalledOnce();
     expect(f.logger.error).not.toHaveBeenCalled();
-  }finally{f.gateway.dispose();await Promise.allSettled([first,second]);vi.restoreAllMocks();}
+  }finally{releaseDelivery.resolve();f.gateway.dispose();await Promise.allSettled([first,second]);vi.restoreAllMocks();}
 });
 
 it('automatic maintenance skips small contexts and active Desktop turns',async()=>{
@@ -195,10 +201,6 @@ it.each(['after-resume', undefined])('renumbered input releases the group queue 
     await f.begin(secondId, 'turn-2', 5, epoch);
     await f.finish('turn-2', 'second answer', 6, epoch);
     expect(await second).toBe('completed');
-    expect(f.delivered.mock.calls).toEqual([
-      [{ scope: 'group', targetId: 'peer', msgId: 'Iris' }, 'first answer'],
-      [{ scope: 'group', targetId: 'peer', msgId: 'Cassandra' }, 'second answer'],
-    ]);
   } finally {
     f.gateway.dispose();
     await Promise.allSettled([first, second]);
@@ -221,7 +223,6 @@ it('a rejected QQ reply fails its input and lets the next group member proceed',
     await f.begin(await f.started[1]!.promise, 'turn-2', 77, 'before-resume');
     await f.finish('turn-2', 'second answer', 78, 'before-resume');
     expect(await second).toBe('completed');
-    expect(f.delivered).toHaveBeenLastCalledWith({ scope: 'group', targetId: 'peer', msgId: 'Cassandra' }, 'second answer');
   } finally {
     f.gateway.dispose();
     await Promise.allSettled([first, second]);

@@ -31,17 +31,22 @@ export function resolveReplyTarget(
 ): ReplyTarget {
   // 主动推送不占用、也不复用被动回复额度
   if (target.forceProactive) {
-    return { scope: target.scope, targetId: target.targetId };
+    const { scope, targetId, mentionUserId } = target;
+    return mentionUserId === undefined ? { scope, targetId } : { scope, targetId, mentionUserId };
   }
   const cached = cache.getCachedReplyIds(target.scope, target.targetId);
   const explicitMsgId = target.msgId;
+  const explicitEventId = allowEvent ? target.eventId : undefined;
   const candidates: CachedReplyId[] = [];
-  // 显式 id 在 cache TTL 内（未超平台被动窗口）才置顶优先，否则跳过
-  if (explicitMsgId !== undefined && cached.some((c) => c.id === explicitMsgId)) {
+  // Match both kind and the current peer's cache window before preferring an id.
+  if (explicitEventId !== undefined && cached.some(c => c.kind === 'event' && c.id === explicitEventId)) {
+    candidates.push({ kind: 'event', id: explicitEventId });
+  }
+  if (explicitMsgId !== undefined && cached.some(c => c.kind === 'msg' && c.id === explicitMsgId)) {
     candidates.push({ kind: 'msg', id: explicitMsgId });
   }
   for (const c of cached) {
-    if (c.id === explicitMsgId) continue; // undefined 时恒 false，安全
+    if ((c.kind === 'msg' && c.id === explicitMsgId) || (c.kind === 'event' && c.id === explicitEventId)) continue;
     candidates.push(c);
   }
 
@@ -59,24 +64,32 @@ export function resolveReplyTarget(
   return { ...target, msgId: undefined, eventId: undefined };
 }
 
+/** QQ group mention identity belongs to the request, never the fallback msg_id. */
+export function replyMention(target: ReplyTarget): string {
+  return target.scope === 'group' && target.mentionUserId !== undefined
+    ? `<qqbot-at-user id="${target.mentionUserId}" />\n`
+    : '';
+}
+
 /**
- * 发送 markdown：区分 msg_id 与 event_id。
- * 带 eventId 时通过 bot.send 的 extra 填 event_id（SDK sendMarkdown 不支持）；
- * 否则走 sendMarkdown 填 msg_id。
+ * 带 eventId 或需要校验混排图片时，通过 bot.send 保留完整 Markdown 字段；
+ * 普通消息仍走 sendMarkdown 填 msg_id。
  */
 export function sendResolvedMarkdown(
   bot: QQBot,
   target: ReplyTarget,
   content: string,
-  opts?: { keyboard?: InlineKeyboard },
+  opts?: { keyboard?: InlineKeyboard; forceVerifyImageResource?: boolean },
 ): Promise<unknown> {
-  if (target.eventId) {
+  content = replyMention(target) + content;
+  if (target.eventId || opts?.forceVerifyImageResource) {
+    const markdown = { content, ...(opts?.forceVerifyImageResource ? { force_verify_image_resource: true } : {}) };
     return bot.send({
-      target: { scope: target.scope, targetId: target.targetId, msgId: undefined },
+      target: { scope: target.scope, targetId: target.targetId, msgId: target.eventId ? undefined : target.msgId },
       msgType: MsgType.MARKDOWN,
-      markdown: { content },
+      markdown,
       keyboard: opts?.keyboard,
-      extra: { event_id: target.eventId },
+      ...(target.eventId ? { extra: { event_id: target.eventId } } : {}),
     });
   }
   return bot.sendMarkdown(target, content, opts);

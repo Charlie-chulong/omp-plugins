@@ -22,7 +22,15 @@ export async function startProtocolServer(port = 0) {
     if(path==='/app/getAppAccessToken'&&request.method==='POST') { const body=await readBody(request); return respond(response,body.appId===appId&&body.clientSecret===clientSecret?200:401,body.appId===appId&&body.clientSecret===clientSecret?{access_token:token,expires_in:7200}:{message:'Local fixture credential mismatch'}); }
     if(path==='/__control/state')return respond(response,200,{connections,activeSockets:sockets.size,outbound});
     if(path==='/__control/message'&&request.method==='POST') { const body=await readBody(request); if(body.scope!=='c2c'&&body.scope!=='group')return respond(response,400,{message:'scope required'});const message={id:body.messageId??randomUUID(),content:String(body.text??''),timestamp:new Date().toISOString(),author:body.scope==='group'?{member_openid:body.sender??'local-sender'}:{user_openid:body.sender??'local-sender'},...(body.scope==='group'?{group_openid:body.peer??'local-group',mentions:body.mention?[{id:appId}]:[]}:{}),attachments:body.attachments??[]};broadcast(body.scope==='group'?'GROUP_AT_MESSAGE_CREATE':'C2C_MESSAGE_CREATE',message);return respond(response,200,{accepted:true,id:message.id}); }
-    if(path==='/__control/interaction'&&request.method==='POST'){const body=await readBody(request);broadcast('INTERACTION_CREATE',{id:randomUUID(),type:12,version:1,scene:body.scope??'c2c',user_openid:body.scope==='group'?undefined:body.peer??'local-sender',group_openid:body.scope==='group'?body.peer??'local-group':undefined,group_member_openid:body.scope==='group'?body.sender??'local-sender':undefined,data:{type:12,resolved:{button_data:String(body.data??'')}}});return respond(response,200,{accepted:true});}
+    if(path==='/__control/interaction'&&request.method==='POST'){
+      const body=await readBody(request);const scope=body.scope??'c2c';const type=body.type??11;
+      if((scope!=='c2c'&&scope!=='group')||(type!==11&&type!==12))return respond(response,400,{message:'scope and interaction type invalid'});
+      const id=body.eventId??randomUUID();
+      broadcast('INTERACTION_CREATE',{id,type,version:1,scene:scope,chat_type:scope==='group'?1:2,
+        user_openid:scope==='group'?undefined:body.peer??'local-sender',group_openid:scope==='group'?body.peer??'local-group':undefined,
+        group_member_openid:scope==='group'?body.sender??'local-sender':undefined,data:{type,resolved:{button_data:String(body.data??'')}}});
+      return respond(response,200,{accepted:true,id});
+    }
     if(request.headers.authorization!==`QQBot ${token}`)return respond(response,401,{message:'Unauthorized'});
     if(path==='/gateway')return respond(response,200,{url:base.replace('http:','ws:')+'/gateway'});
     if(/^\/v2\/(users|groups)\/[^/]+\/(messages|stream_messages)$/.test(path)&&request.method==='POST'){const body=await readBody(request);outbound.push({path,body});return respond(response,200,{id:randomUUID(),timestamp:new Date().toISOString()});}

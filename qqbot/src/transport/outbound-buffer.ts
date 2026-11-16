@@ -7,6 +7,7 @@
 import type { InlineKeyboard } from '@tencent-connect/qqbot-nodejs';
 import type { Logger, ReplyTarget } from '../types.ts';
 import { chunkMarkdownText } from './chunker.ts';
+import { replyMention } from './reply-target.ts';
 import { StreamingWriter } from './streaming-writer.ts';
 
 /** 流式输出节流间隔(ms)：连续 chunk 累积后停顿该间隔才推送 */
@@ -20,7 +21,7 @@ export interface StreamSessionLike {
 
 /** QQ Bot 发送接口 */
 export interface QQBotSender {
-  sendMarkdown(target: ReplyTarget, content: string, opts?: { keyboard?: InlineKeyboard }): Promise<unknown>;
+  sendMarkdown(target: ReplyTarget, content: string, opts?: { keyboard?: InlineKeyboard; forceVerifyImageResource?: boolean }): Promise<unknown>;
   openStream(target: ReplyTarget): StreamSessionLike;
 }
 
@@ -42,7 +43,7 @@ export class OutboundBuffer {
     streamingEnabled: boolean,
   ) {
     this.bot = bot;
-    this.limit = limit;
+    this.limit = limit - replyMention(target).length;
     this.logger = logger;
     this.target = target;
     this.writer = streamingEnabled

@@ -80,30 +80,54 @@ describe('resolveReplyTarget', () => {
     expect(result.eventId).toBe('INTERACTION_CREATE:evt-2');
     expect(result.msgId).toBeUndefined();
   });
+  it('prefers the clicked event over a newer unrelated member message in the same peer', () => {
+    const limiter = new ReplyLimiter({ limit: 4 });
+    cache.cacheEventId('group', 'g', 'clicked');
+    cache.cacheMsgId('group', 'g', 'another-member');
+    const target = resolveReplyTarget({ scope: 'group', targetId: 'g', eventId: 'INTERACTION_CREATE:clicked', mentionUserId: 'player' }, limiter, true, cache);
+    expect(target.eventId).toBe('INTERACTION_CREATE:clicked');
+    expect(target.msgId).toBeUndefined();
+    expect(limiter.checkLimit('INTERACTION_CREATE:clicked').remaining).toBe(3);
+    expect(limiter.checkLimit('another-member').remaining).toBe(4);
+  });
+
+  it.each(['unknown', 'other-peer', 'expired', 'exhausted', 'not-allowed'] as const)('keeps the passive message fallback when an explicit event is %s', reason => {
+    vi.useFakeTimers();
+    try {
+      const limiter = new ReplyLimiter({ limit: 1 });
+      if (reason !== 'unknown') cache.cacheEventId('group', reason === 'other-peer' ? 'other' : 'g', 'clicked');
+      if (reason === 'expired') vi.setSystemTime(Date.now() + 300001);
+      if (reason === 'exhausted') limiter.record('INTERACTION_CREATE:clicked');
+      cache.cacheMsgId('group', 'g', 'fresh-message');
+      const target = resolveReplyTarget({ scope: 'group', targetId: 'g', eventId: 'INTERACTION_CREATE:clicked' }, limiter, reason !== 'not-allowed', cache);
+      expect(target.eventId).toBeUndefined();
+      expect(target.msgId).toBe('fresh-message');
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 describe('sendResolvedMarkdown', () => {
-  it('fills event_id via bot.send when target has eventId', async () => {
-    const bot = {
-      send: vi.fn(async () => ({})),
-      sendMarkdown: vi.fn(async () => ({})),
-    } as unknown as QQBot;
-    const target: ReplyTarget = { scope: 'c2c', targetId: 'p', eventId: 'INTERACTION_CREATE:evt' };
-    await sendResolvedMarkdown(bot, target, 'hello');
-    expect(bot.send).toHaveBeenCalledWith(expect.objectContaining({
-      extra: { event_id: 'INTERACTION_CREATE:evt' },
-    }));
-    expect(bot.sendMarkdown).not.toHaveBeenCalled();
+
+
+  it.each(['message','event','proactive','forced'] as const)('mentions the requester through %s fallback, independently of another member’s reply id',async mode=>{
+    const limiter=new ReplyLimiter({limit:1});
+    if(mode==='message'||mode==='forced')cache.cacheMsgId('group','g','another-player-msg');
+    if(mode==='event')cache.cacheEventId('group','g','another-player-event');
+    const target=resolveReplyTarget({scope:'group',targetId:'g',msgId:'requester-expired-msg',mentionUserId:'requester',forceProactive:mode==='forced'},limiter,true,cache);
+    const bot={send:vi.fn(async()=>({})),sendMarkdown:vi.fn(async()=>({}))} as unknown as QQBot;
+    await sendResolvedMarkdown(bot,target,'山门已开。');
+    const content=mode==='event'
+      ? vi.mocked(bot.send).mock.calls[0]![0].markdown!.content!
+      : vi.mocked(bot.sendMarkdown).mock.calls[0]![1];
+    expect(content).toMatch(/^<qqbot-at-user id="requester" \/>\n/);
+    expect(content).not.toContain('another-player');
+    expect(target.msgId).toBe(mode==='message'?'another-player-msg':undefined);
+    expect(target.eventId).toBe(mode==='event'?'INTERACTION_CREATE:another-player-event':undefined);
   });
 
-  it('uses sendMarkdown for msgId targets', async () => {
-    const bot = {
-      send: vi.fn(async () => ({})),
-      sendMarkdown: vi.fn(async () => ({})),
-    } as unknown as QQBot;
-    const target: ReplyTarget = { scope: 'c2c', targetId: 'p', msgId: 'm1' };
-    await sendResolvedMarkdown(bot, target, 'hello');
-    expect(bot.sendMarkdown).toHaveBeenCalledWith(target, 'hello', undefined);
-    expect(bot.send).not.toHaveBeenCalled();
+  it('keeps private replies plain even when a mention recipient is present',async()=>{
+    const bot={sendMarkdown:vi.fn(async()=>({}))} as unknown as QQBot;
+    await sendResolvedMarkdown(bot,{scope:'c2c',targetId:'private-player',mentionUserId:'private-player'},'山门已开。');
+    expect(vi.mocked(bot.sendMarkdown).mock.calls[0]![1]).toBe('山门已开。');
   });
 });

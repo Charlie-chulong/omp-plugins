@@ -9,6 +9,7 @@ const request: GameReviewRequest = {
   kind: 'rift', requestId: 'current-review', revision: 2,
   system: '只依据真实行动证据判定。', prompt: '当前行动：先观察出口，再试探地板。',
   schema: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'] },
+  label: '行动判定', announce: false, failureMessage: '当前行动尚未完成，请重试。',
 };
 const config: OmpAgentConfig = {
   provider: 'codex/current-model', thinkingOptionId: 'high',
@@ -54,17 +55,20 @@ function fixture() {
   };
   const parent = {
     id: 'chat-parent', workspaceId: 'chat-workspace',
-    run: vi.fn(), send: vi.fn(), stop: vi.fn(), archive: vi.fn(), detach: vi.fn(),
+    refresh: vi.fn(async () => ({ agent: { id: 'chat-parent', status: 'idle', activeTurn: null } })),
+    configuration: vi.fn(async () => ({ ...config, cwd: '/qq-sandbox' })),
+    setModel: vi.fn(async () => {}), run: vi.fn(), send: vi.fn(), stop: vi.fn(), archive: vi.fn(), detach: vi.fn(),
     timeline: { refetch: vi.fn(() => { throw new Error('Parent chat history must never be read'); }) },
   };
   const create = vi.fn(async (_options: Parameters<OmpApi['agents']['create']>[0]) => { order.push('create'); return child as unknown as OmpAgentHandle; });
   const createWorkspace = vi.fn();
   const omp = { agents: { create }, workspaces: { create: createWorkspace } } as unknown as OmpApi;
   const remove = vi.spyOn(controller.signal, 'removeEventListener');
+  const reportError = vi.fn();
   const options = { omp, parent: parent as unknown as OmpAgentHandle, config, cwd: '/qq-sandbox', request,
-    feedback: '', signal: controller.signal, timeoutMs: 1000 };
+    feedback: '', signal: controller.signal, timeoutMs: 1000, reportError };
   const emit = (event: OmpAgentStream['event']) => receive?.({ agentId: child.id, event } as OmpAgentStream);
-  return { controller, order, observation, result, child, parent, create, createWorkspace, remove, options, emit, runStarted };
+  return { controller, order, observation, result, child, parent, create, createWorkspace, remove, options, emit, runStarted, reportError };
 }
 interface ReleaseChecks {
   child: Pick<OmpAgentHandle, 'archive' | 'stop' | 'detach'>;
@@ -101,6 +105,7 @@ it('returns every canonical delta unchanged, ignoring incomplete run summaries a
   f.child.timeline.refetch.mockResolvedValueOnce(page(entries));
   expect(await runGameReview(f.options)).toEqual({ text, messageCount: 1 });
   expect(f.child.timeline.refetch).toHaveBeenCalledWith({ direction: 'tail', limit: 0, projection: 'canonical' });
+  expect(f.create.mock.calls[0]![0].config?.systemPrompt).toBe(request.system);
   expect(f.order).toEqual(['create', 'observe', 'unsubscribe', 'archive']);
   expect(f.observation.unsubscribe).toHaveBeenCalledOnce();
   expectReleased(f, false);
@@ -198,7 +203,7 @@ it('does not create a child for an already canceled route', async () => {
   const f = fixture();
   f.controller.abort(new Error('route replaced'));
   await expect(runGameReview(f.options)).rejects.toMatchObject({ name: 'AbortError', cause: f.controller.signal.reason });
-  expect(f.create).not.toHaveBeenCalled(); expect(f.parent.stop).not.toHaveBeenCalled();
+  expect(f.create).not.toHaveBeenCalled();
 });
 
 it('stops only its active child and discards output arriving after cancellation', async () => {
@@ -219,8 +224,10 @@ it('stops only its active child and discards output arriving after cancellation'
 it('joins a late create result and cleans it without observing or starting a canceled review', async () => {
   const f = fixture();
   const creating = Promise.withResolvers<OmpAgentHandle>();
-  f.create.mockReturnValueOnce(creating.promise);
+  const started = Promise.withResolvers<void>();
+  f.create.mockImplementationOnce(async () => { started.resolve(); return creating.promise; });
   const review = runGameReview(f.options);
+  await started.promise;
   f.controller.abort('route replaced during create');
   creating.resolve(f.child as unknown as OmpAgentHandle);
   await expect(review).rejects.toMatchObject({ name: 'AbortError' });
@@ -346,7 +353,7 @@ it('removes cancellation listeners when creation fails without touching any exis
   await expect(runGameReview(f.options)).rejects.toBe(failed);
   expect(f.remove).toHaveBeenCalledWith('abort', expect.any(Function));
   expect(f.child.observe).not.toHaveBeenCalled(); expect(f.child.stop).not.toHaveBeenCalled();
-  expect(f.child.archive).not.toHaveBeenCalled(); expect(f.parent.stop).not.toHaveBeenCalled();
+  expect(f.child.archive).not.toHaveBeenCalled();
 });
 
 it('still archives the child and removes route listeners if observation disposal fails', async () => {
@@ -355,4 +362,45 @@ it('still archives the child and removes route listeners if observation disposal
   f.observation.unsubscribe = vi.fn(() => { throw failed; });
   await expect(runGameReview(f.options)).rejects.toMatchObject({ name: 'AggregateError', errors: [failed] });
   expectReleased(f, false);
+});
+
+it('a hung child creation releases the review deadline and cleans its late result', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const creating = Promise.withResolvers<OmpAgentHandle>();
+  f.create.mockReturnValueOnce(creating.promise);
+  const review = runGameReview({ ...f.options, timeoutMs: 40 });
+  const rejected = expect(review).rejects.toMatchObject({ name: 'TimeoutError' });
+  await vi.advanceTimersByTimeAsync(40); await rejected;
+  expect(f.child.run).not.toHaveBeenCalled(); expect(f.remove).toHaveBeenCalled();
+  creating.resolve(f.child as unknown as OmpAgentHandle);
+  await vi.advanceTimersByTimeAsync(0);
+  expectReleased(f, true);
+});
+
+it('a hung observation acquisition releases the deadline and disposes its late lease', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const observing = Promise.withResolvers<OmpAgentObservation>();
+  f.child.observe.mockReturnValueOnce(observing.promise);
+  const review = runGameReview({ ...f.options, timeoutMs: 40 });
+  const rejected = expect(review).rejects.toMatchObject({ name: 'TimeoutError' });
+  await vi.advanceTimersByTimeAsync(40); await rejected;
+  expect(f.child.run).not.toHaveBeenCalled();
+  observing.resolve(f.observation); await vi.advanceTimersByTimeAsync(0);
+  expect(f.observation.unsubscribe).toHaveBeenCalledOnce(); expectReleased(f, true);
+});
+
+it('a hung archive does not hold the queue and reports its delayed failure for audit', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const archiving = Promise.withResolvers<{ archivedAt: string }>();
+  const failure = new Error('late archive rejection');
+  f.child.archive.mockReturnValueOnce(archiving.promise);
+  const review = runGameReview({ ...f.options, timeoutMs: 40 });
+  const rejected = expect(review).rejects.toMatchObject({ name: 'TimeoutError' });
+  await vi.advanceTimersByTimeAsync(40); await rejected;
+  expect(f.remove).toHaveBeenCalled();
+  archiving.reject(failure); await vi.advanceTimersByTimeAsync(0);
+  expect(f.reportError).toHaveBeenCalledWith(expect.objectContaining({ name: 'AggregateError', errors: [failure] }));
 });

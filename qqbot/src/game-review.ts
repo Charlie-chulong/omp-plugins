@@ -1,6 +1,7 @@
 import type { OmpApi, OmpAgentHandle, OmpAgentConfig, OmpAgentObservation } from '@omp-desktop/client';
 import type { GameReviewRequest } from './game-api.ts';
 import { AssistantOutput, type AssistantReply } from './assistant-output.ts';
+import { gameParentConfiguration } from './game-parent.ts';
 
 export interface GameReviewOptions {
   omp: OmpApi;
@@ -11,6 +12,7 @@ export interface GameReviewOptions {
   feedback: string;
   signal: AbortSignal;
   timeoutMs: number;
+  reportError: (error: unknown) => void;
 }
 
 function canceled(signal: AbortSignal) {
@@ -19,8 +21,8 @@ function canceled(signal: AbortSignal) {
   return error;
 }
 
-// SDK parent establishes ownership and reuses the parent's workspace, not its
-// conversation. Create without a prompt so permission observation precedes work.
+// Restore closed roots through their saved model configuration, then create a
+// true child without a prompt so permission observation precedes work.
 export async function runGameReview(options: GameReviewOptions): Promise<AssistantReply> {
   const { omp, parent, config, cwd, request, feedback, signal, timeoutMs } = options;
   if (signal.aborted) throw canceled(signal);
@@ -28,6 +30,8 @@ export async function runGameReview(options: GameReviewOptions): Promise<Assista
   const controller = new AbortController();
   let interruption: Error | undefined;
   const { promise: interrupted, reject: rejectInterrupted } = Promise.withResolvers<never>();
+  const { promise: expired, reject: rejectExpired } = Promise.withResolvers<never>();
+  void expired.catch(() => {});
   const fail = (error: Error) => {
     if (interruption) return;
     interruption = error;
@@ -40,6 +44,7 @@ export async function runGameReview(options: GameReviewOptions): Promise<Assista
     const error = new Error(`游戏评审超时（${timeoutMs}ms）`);
     error.name = 'TimeoutError';
     fail(error);
+    rejectExpired(error);
   }, timeoutMs);
   const wait = <T>(operation: Promise<T>): Promise<T> => Promise.race([operation, interrupted]);
   const check = () => { if (interruption) throw interruption; };
@@ -62,12 +67,17 @@ export async function runGameReview(options: GameReviewOptions): Promise<Assista
 
   try {
     check();
+    const parentConfig = await wait(gameParentConfiguration(parent));
+    check();
+    // OMP uses ask/always-ask; exact MCP preapproval policies are unsupported.
+    const { toolPolicy: _chatToolPolicy, ...reviewConfig } = config;
     creating = omp.agents.create({
       parent, cwd, background: true, notifyOnFinish: false,
       config: {
-        ...config,
-        systemPrompt: `${request.system}\n\n[插件宿主评审规则]\n只依据当前评审输入和真实纠正反馈给出判定JSON；不要执行游戏动作、使用工具或回复QQ。评分是否有效及是否通过由宿主游戏引擎校验，不得自报执行成功。`,
-        toolPolicy: { preapproved: [] },
+        ...reviewConfig,
+        provider: parentConfig.provider,
+        modeId: 'ask',
+        systemPrompt: request.system,
         mcpServers: {},
       },
     }).then(agent => { child = agent; return agent; });
@@ -88,7 +98,7 @@ export async function runGameReview(options: GameReviewOptions): Promise<Assista
     for (const permission of observation!.snapshot.pendingPermissions) deny(permission.id);
     check();
 
-    const prompt = `${request.prompt}\n\n严格输出判定JSON，完整schema：${JSON.stringify(request.schema)}`
+    const prompt = `${request.prompt}\n\n严格输出单个JSON对象，完整schema：${JSON.stringify(request.schema)}`
       + (feedback ? `\n\n[宿主真实纠正反馈]\n${feedback}` : '');
     const result = await wait(child!.run(prompt, {
       signal: controller.signal, timeoutMs, requireIdle: true, sourceKind: 'service',
@@ -123,23 +133,33 @@ export async function runGameReview(options: GameReviewOptions): Promise<Assista
   } catch (error) {
     failure = interruption ?? error;
   } finally {
-    // Creation and observation have no SDK cancellation parameter. Join their
-    // settlement before returning so a late child or timeline lease cannot leak.
-    if (creating) {
-      try { await creating; } catch (error) { failure ??= error; }
-    }
-    if (observing) {
-      try { await observing; } catch (error) { failure ??= error; }
-    }
-    try { observation?.unsubscribe(); } catch (error) { cleanupErrors.push(error); }
-    await Promise.all(denials.values());
-    if (child) {
-      if (failure || interruption) {
-        try { await child.stop(); } catch (error) { cleanupErrors.push(error); }
+    // Keep joining late SDK leases for cleanup, but never hold the QQ queue
+    // beyond the original review deadline when create/observe/cleanup hangs.
+    let cleaned = false;
+    const cleanup = (async () => {
+      if (creating) {
+        try { await creating; } catch (error) { failure ??= error; }
       }
-      // archive unloads the runtime and retains the result for host audit; it
-      // neither archives the shared workspace nor stops the parent.
-      try { await child.archive(); } catch (error) { cleanupErrors.push(error); }
+      if (observing) {
+        try { await observing; } catch (error) { failure ??= error; }
+      }
+      try { observation?.unsubscribe(); } catch (error) { cleanupErrors.push(error); }
+      await Promise.all(denials.values());
+      if (child) {
+        if (failure || interruption) {
+          try { await child.stop(); } catch (error) { cleanupErrors.push(error); }
+        }
+        // Archiving retains the child for audit without touching its parent.
+        try { await child.archive(); } catch (error) { cleanupErrors.push(error); }
+      }
+      cleaned = true;
+    })();
+    try { await Promise.race([cleanup, expired]); }
+    catch (error) {
+      failure ??= error;
+      if (!cleaned) void cleanup.then(() => {
+        if (cleanupErrors.length) options.reportError(new AggregateError(cleanupErrors, '游戏评审延迟清理失败'));
+      }, options.reportError);
     }
     clearTimeout(timer);
     signal.removeEventListener('abort', abort);

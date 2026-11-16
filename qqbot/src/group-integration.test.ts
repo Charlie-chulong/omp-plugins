@@ -26,7 +26,7 @@ function conversation(responses:string[] = []) {
   cleanups.push(() => gateway.dispose());
   const inputs: string[] = [];
   const peer: Peer = { appId: 'test-account', scope: 'group', openid: 'GROUP_OPENID', hostId: 'host', agentId: 'agent', workspaceId: 'workspace', cwd: '/fixture', preset: 'default', template: values.config.presets[0]!, protocolPrompt: '', lastDeliveredSequence: 0 };
-  const route = { peer, agent: {} as OmpAgentHandle, unsubscribe: null, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), chain:Promise.resolve(), lastSeq: 0 };
+  const route = { peer, agent: {} as OmpAgentHandle, unsubscribe: null, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), sceneImages: new Map(), chain:Promise.resolve(), lastSeq: 0 };
   const internal = gateway as unknown as {
     bot: QQBot & { handleInboundMessage(message: Omit<QQBotInboundMessage, 'replyTarget'>): Promise<void> };
     routes: Map<string, typeof route>;

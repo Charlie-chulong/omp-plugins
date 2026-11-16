@@ -46,9 +46,16 @@ function migrateStoredPreset(value: unknown) {
   const { options, featureValues, mcpServers, toolPolicy, sandbox, ...safe } = config;
   return { ...preset, config: safe, qq: { ...qq, skills: [], tools: [] } };
 }
+export const SceneImageMaterialSchema = z.object({
+  imageId: z.string().min(1).max(1024).regex(/^[A-Za-z0-9_-]+$/),
+  url: z.string().regex(/^qqbot-media:\/\/image\/v1\/[A-Za-z0-9._~-]+$/),
+  expiresAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  lastUsedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict();
+export type SceneImageMaterial = z.infer<typeof SceneImageMaterialSchema>;
 export const StateSchema = z.preprocess(value => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const state = value as Record<string, unknown>;
+  const { riftImages, ...state } = value as Record<string, unknown>;
   const config = state.config as Record<string, unknown> | undefined;
   const peers = state.peers as Record<string, Record<string, unknown>> | undefined;
   const templates = [...(Array.isArray(config?.presets) ? config.presets : []), ...Object.values(peers ?? {}).map(peer => peer.template)];
@@ -66,11 +73,12 @@ export const StateSchema = z.preprocess(value => {
   });
   const notice = 'QQ 强制沙箱迁移已移除旧 preset 的宿主 skills、tools、MCP 与运行选项；模型、prompt、账号与历史保留。';
   return { ...state,
+    ...(riftImages === undefined ? {} : { sceneImages: { ...riftImages as Record<string, string>, ...state.sceneImages as Record<string, string> } }),
     ...(removed && (state.importReport === undefined || Array.isArray(state.importReport)) ? { importReport: [...new Set([...(state.importReport as string[] ?? []), notice])] } : {}),
     ...(config ? { config: { ...config, ...(Array.isArray(config.presets) ? { presets: config.presets.map(migrateStoredPreset) } : {}) } } : {}),
     ...(peers ? { peers: Object.fromEntries(Object.entries(peers).map(([key, peer]) => [key, { ...peer, template: migrateStoredPreset(peer.template) }])) } : {}),
   };
-}, z.object({ schemaVersion: z.literal(1).default(1), config: ConfigSchema.default(() => ConfigSchema.parse({})), credentialVersions:z.record(z.string(),z.number().int().nonnegative()).default({}), access: AccessSchema.default(() => AccessSchema.parse({})), accountAccess: z.record(z.string(), AccessSchema).default({}), groupMembers: GroupDirectorySchema.default({}), peers: z.record(z.string(), PeerSchema).default({}), presetSelections: z.record(z.string(), z.string()).default({}), modelSelections: z.record(z.string(), z.string().nullable()).default({}), importReport: z.array(z.string()).default([]) }));
+}, z.object({ schemaVersion: z.literal(1).default(1), config: ConfigSchema.default(() => ConfigSchema.parse({})), credentialVersions:z.record(z.string(),z.number().int().nonnegative()).default({}), access: AccessSchema.default(() => AccessSchema.parse({})), accountAccess: z.record(z.string(), AccessSchema).default({}), groupMembers: GroupDirectorySchema.default({}), peers: z.record(z.string(), PeerSchema).default({}), presetSelections: z.record(z.string(), z.string()).default({}), modelSelections: z.record(z.string(), z.string().nullable()).default({}), sceneImages: z.record(z.string(), z.string().regex(/^\.qqbot-media\/generated\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/)).default({}), sceneImageMaterials: z.record(z.string(), z.record(z.string().regex(/^[0-9a-f]{40}$/), SceneImageMaterialSchema)).default({}), importReport: z.array(z.string()).default([]) }));
 export type Config = z.infer<typeof ConfigSchema>;
 export type State = z.infer<typeof StateSchema>;
 export type Peer = z.infer<typeof PeerSchema>;

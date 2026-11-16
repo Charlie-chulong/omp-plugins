@@ -55,7 +55,7 @@ Live assistant timeline rows are incremental fragments, not cumulative snapshots
 
 ## QQ context maintenance
 
-The original QQ envelope, attachments, and vision input are sent once per admitted message. Member-query and multi-step game continuations carry only the latest host feedback and current player state. Identity and game rules live in the agent's versioned system prompt instead of being repeated in every input.
+The original QQ envelope, attachments, and vision input are sent once per admitted message. Member-query and multi-step game continuations carry only the latest host feedback and engine-provided context. QQ identity rules belong to the plugin; gameplay rules and the game protocol version come from the external engine and are installed in the agent's system prompt.
 
 After plugin reload, a safe legacy conversation stays attached while its current turn runs. Its next admitted QQ message waits for that turn, requests a silent bounded handoff, and creates a new agent with the current protocol and latest peer model/preset selections. The handoff retains confirmed memory, unfinished requests, complete relevant OpenIDs, and necessary attachment paths; it is consumed by the first accepted input. Old Desktop history and sandbox files remain available. Invalid handoffs leave the old conversation intact; `/reset` starts a new conversation without that handoff. Sandbox or capability changes still retire unsafe agents immediately.
 
@@ -91,38 +91,73 @@ The directory is stored in host-scoped plugin settings as `groupMembers`, keyed 
 
 Trusted host clients can invoke `qqbot.group-members` with `{agentId, nickname?, member_openid?, refresh?}`. The persisted agent mapping selects the current QQ group; private chats, foreign hosts, revoked groups, and replaced mappings are rejected. QQ agents retain their mandatory sandbox: this RPC is not exposed as a model-accessible host tool or MCP connection.
 
-## QQ controlled game execution
+## QQ external game integration
 
-The trusted standalone engine defaults to `~/.omp/qqbot-games`. Enable it in the existing QQ configuration JSON editor; only Desktop can change this host-controlled setting:
+The game implementation lives outside the plugin, by default in `~/.omp/qqbot-games`. Enable it in the existing QQ configuration JSON editor; only Desktop can change this host-controlled setting:
 
 ```json
 {"game":{"enabled":true,"engineDirectory":"~/.omp/qqbot-games"}}
 ```
 
-`engineDirectory` may be omitted or left empty to use the default. A custom value must be an absolute or `~/` path outside the QQ sandbox. The host resolves its canonical `engine.js` and CommonJS `createGame(options)` export at startup. A missing or invalid entry fails explicitly; there is no bundled engine or fallback. Changes take effect after the existing plugin reload; safe conversations using the other protocol migrate on their next admitted message while preserving Desktop history.
+`engineDirectory` may be omitted or left empty to use the default. A custom value must be an absolute or `~/` path outside the QQ sandbox. The loader resolves the canonical `engine.js` and CommonJS `createGame(options).host` API at startup. It loads the external entry at runtime rather than bundling game code. Missing entries or incomplete host APIs fail explicitly.
 
-Players can use normal commands such as `我要修仙`, `新手礼包领取`, `闭关`, `我的背包`, and `突破`, or ask naturally. The agent understands wording and typos, submits normal actions, and explains the engine's actual result. Short breakthrough answers need no prefix or quotation; the engine allows at most one follow-up.
+The external engine owns gameplay commands and aliases, rules and numerical thresholds, player data structures, context and receipt interpretation, target selection, destructive-action confirmation, model-review policy, and scene validity. Its standalone `createGame(options)` entry remains usable by ordinary Node consumers. QQBot owns QQ messages and native mentions, access control, peer queues, callback ownership, sandboxed model execution, and media delivery.
 
-The standalone CommonJS engine can be used by ordinary Node code with `require(path.join(require('node:os').homedir(), '.omp/qqbot-games')).createGame(options)`, or with its configured absolute path. Production data remains outside the sandbox at `~/.omp/qqbot-data/installation-<encodeURIComponent(installation.id)>/xiuxian.sqlite`; changing the source directory does not migrate or reset it. There is no configurable sandbox save path or JSON import. GM, sect extensions, sandbox runners, test routes, and synchronization paths are removed.
+The generic host contract is described by `qqbot/src/game-api.ts` and the external engine's `host.d.ts`:
 
-Actions use the original QQ event's account, scene, peer, sender, and single explicit mention target. The model cannot supply identities, paths, time, randomness, or permissions. Completed assistant output is validated before QQ delivery; action JSON, malformed protocol output, and breakthrough scoring are never sent to players. The host validates the full scoring result and binds its trial/revision before settlement; invalid model results remain recoverable and do not count as a player's failed attempt.
+- `protocol` supplies the engine's version and system prompt.
+- `parseInput`, `handleMessage`, and `executeAction` recognize and execute engine-owned actions. The plugin passes original text and trusted QQ identities; models cannot supply identity, paths, time, randomness, or permissions.
+- `context` and `feedback` supply the model's current context and actual execution results. `inspect` returns an opaque player snapshot and command recognition without executing actions.
+- `resolveReview` accepts the engine's opaque request kind, ID, revision, and completed model output. Each request supplies its system prompt, schema, announcement flag, diagnostic label, and failure message.
+- `getChoiceState` supplies an opaque selection snapshot, including any target state the engine requires. `getSceneState` returns `active`, `pending`, or `obsolete`; the plugin does not inspect player or world fields.
+- `close` releases the same underlying game store.
 
-Breakthrough and rift reviews run in a fresh background child session using the parent's current model. The child shares workspace ownership, not conversation history; it receives only the current review request, complete schema, and real correction feedback. Its system prompt replaces chat rules, MCP connections are cleared, and permission requests are denied. Complete canonical output is returned to the engine for validation, never to QQ or as a parent completion notification. The plugin archives the child after success or failure; cancellation, timeout, `/stop`, and replacement input discard its result and stop the child without stopping unrelated sessions.
+The installed game now supplies `qqbot-host-game-v6`; the plugin consumes its version instead of pinning one. After rebuilding and reloading the plugin, safe older conversations migrate on their next admitted QQ message using the existing handoff. Desktop history, model preferences, sandbox files, and game saves remain available.
 
-Keep administrative commands separate from chat admission: set `access.commandMode` to `allowlist` and configure account-local `owners`. A group owner requires `scene: "group"`, the exact member `openid`, and the exact `groupOpenid`. `nickname` and `sceneName` are display data, not authorization. Legacy group owners without `groupOpenid` do not grant access. C2C identities and other groups cannot inherit that owner permission. Owner checks also protect permission approvals; ordinary question answers remain bound to their original sender. Administrators have no GM game mode.
+Production data retains its existing path outside the sandbox: `~/.omp/qqbot-data/installation-<encodeURIComponent(installation.id)>/xiuxian.sqlite`. The filename is storage compatibility metadata, not a gameplay implementation. Changing the engine source directory does not migrate or reset data. The QQ sandbox cannot contain the engine or its saves.
 
-Trusted host clients can invoke `qqbot.game.inspect` with `{scope, openid, userId, text?}` to read the fixed database path, command recognition, and player snapshot. It does not execute actions, create players, invoke an agent, or send QQ messages; C2C queries require `openid === userId`. It is not exposed as a sandbox tool or MCP connection.
+### Engine results become QQ messages and buttons
 
-From the standalone engine directory, run its behavior suite with `npm test`. From the Desktop repository root, build and test the plugin against that real external engine:
+Recognized commands return the engine's actual messages without model paraphrasing. Explicit multi-step requests remain result-driven and execute at most four actions. Complete assistant output is validated before delivery; action JSON, malformed protocols, and internal review JSON never reach QQ players.
+
+Group replies @ the original requester with QQ's [native mention format](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/text-chain.html), including every delayed chunk. Passive reply-ID fallback cannot replace that recipient. The mention counts toward the message length limit; private replies remain plain.
+
+Engine `choices: [{label, command}]` become native callback buttons. Callbacks carry only generation, nonce, and index; their server-side bindings retain the requester, scope, peer, route, turn, and engine selection snapshot. Menus use two buttons per row and at most five rows, rotate the nonce on page changes, and attach only to the final message chunk. Type-11 interactions are acknowledged before joining the peer queue. Stale, duplicate, expired, stopped, or revoked callbacks cannot execute.
+
+[Custom keyboards require QQ platform permission](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/msg-btn.html). Only QQ's explicit keyboard rejection, error `304037`, resends the rejected chunk with the engine's exact text commands. Previously accepted chunks, asynchronous-acceptance responses, and unknown outcomes are not replayed.
+
+### Engine scene requests use native image generation
+
+Each scene supplies an opaque token, title, description, drawing system prompt and input, expected image dimensions, and progress message. QQBot runs a fresh background drawing child through Desktop's native `generate_image` and configured image backend. It does not select a game-specific image model or impose gameplay art rules.
+
+Original PNG files are cached by sandbox root, scene ID, and the engine's drawing input; the existing game's cache keys and paths remain unchanged. PNG validation checks dimensions supplied by the engine, chunk integrity, compressed pixels, and scanline layout. The current game requests 512×512 images; that policy lives in the engine.
+
+The combined Markdown message contains the native image, unchanged scene text, and buttons only while the engine reports `active`. `pending` retains the current scene without action buttons; `obsolete` discards late messages. QQBot separately enforces route, configuration, sandbox, access, and cancellation checks at delivery. Disabled image generation sends text and buttons immediately; generation or material-upload failure retains the original text and usable buttons.
+
+Uploads use QQ's [material-management API](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html) and `qqbot-media://` references. Up to 64 owned references are retained per account; sends lease their references, and eviction deletes only owned materials, never original PNGs. Explicit image-resource rejection falls back to text, while an unknown final-send outcome is not retried.
+
+### Model children retain the QQ security boundary
+
+Review and drawing children belong to the original QQ root and workspace, without inheriting its conversation history. A closed root is restored with its saved model selection before child creation. Review children use `ask` mode, clear MCP and parent tool preapprovals, and deny all tool permissions. Drawing children retain only the existing sandbox root and native image permission; approvals use the requester's QQ cards.
+
+Canonical review output returns to the engine for validation, not to QQ or as a parent completion notification. Children are archived after completion or failure. Cancellation, timeout, `/stop`, or route replacement discards results; delayed cleanup cannot hold the QQ queue beyond the review deadline.
+
+Administrative commands remain separate from chat admission. With `access.commandMode: "allowlist"`, group owners require the exact account, member `openid`, and `groupOpenid`; names and other groups confer no authorization. Permission approvals remain requester-bound.
+
+Trusted host clients can invoke `qqbot.game.inspect` with `{scope, openid, userId, text?}` for the unchanged database path, command recognition, and opaque player snapshot. It does not execute actions, create players, start models, or send QQ messages. C2C inspection requires `openid === userId`; this RPC is not exposed as a sandbox tool or MCP connection.
+
+### Verify against the external engine
+
+Run `npm test` from the game directory. From the Desktop checkout, build and test QQBot against the real external engine and a built Node SDK:
 
 ```sh
 npm run build --workspace=@omp-desktop/plugin-qqbot
-QQBOT_TEST_ENGINE_DIRECTORY=~/.omp/qqbot-games \
-  OMP_DESKTOP_TEST_SDK_ROOT=/path/to/built/omp-sdk-node-root \
+QQBOT_TEST_ENGINE_DIRECTORY="$HOME/.omp/qqbot-games" \
+  OMP_DESKTOP_TEST_SDK_ROOT="$PWD/packages/desktop/sdk-dist/node_modules/@oh-my-pi/pi-coding-agent" \
   npm run test --workspace=@omp-desktop/plugin-qqbot
 ```
 
-The plugin suite never copies or falls back to an embedded engine. `OMP_DESKTOP_TEST_SDK_ROOT` must contain the built Desktop Node SDK and its native `SandboxFs` addon.
+The SDK root must contain the Node modules and native `SandboxFs` addon. Tests use temporary databases; they never copy a bundled game fixture or fall back to a different engine.
 
 ## License
 

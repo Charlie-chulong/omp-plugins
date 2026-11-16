@@ -28,6 +28,33 @@ function mentionId(mention: StructuredMention): string | undefined {
   return userId?.trim() ? userId : undefined;
 }
 
+/** Asset targets use group IDs only; a private-chat user_openid is never a fallback. */
+export function groupTargetIds(content: string, mentions: readonly StructuredMention[], appId: string): string[] {
+  const targets = new Set<string>();
+  const excluded = new Set(['all']);
+  const aliases = new Map<string, string>();
+  for (const mention of mentions) {
+    const memberId = nonBlank(mention.member_openid);
+    const id = nonBlank(mention.id);
+    const userId = nonBlank(mention.user_openid);
+    if (mention.scope === 'all' || mention.bot || mention.is_you) {
+      for (const value of [memberId, id, userId]) if (value) excluded.add(value);
+      continue;
+    }
+    const target = memberId ?? id;
+    if (target) {
+      targets.add(target);
+      if (id) aliases.set(id, target);
+    } else if (userId) excluded.add(userId);
+  }
+  if (!targets.has(appId)) excluded.add(appId);
+  for (const token of content.matchAll(/<@!?([^<>\s]+)>/gu)) {
+    const id = token[1]!;
+    targets.add(aliases.get(id) ?? id);
+  }
+  return [...targets].filter(id => !excluded.has(id));
+}
+
 function sender(ctx: MiddlewareContext): GroupMember {
   const author = ctx.message.raw.author;
   return GroupMemberSchema.parse({
@@ -59,6 +86,12 @@ export function collectGroupMembers(members: GroupMembers): Middleware {
         }));
         if (mention.is_you) botIds.add(id);
         else mentionedIds.add(id);
+      }
+      for (const id of groupTargetIds(ctx.message.content, mentions, ctx.bot.appId)) {
+        if (!mentionedIds.has(id)) {
+          observed.push(GroupMemberSchema.parse({ member_openid: id }));
+          mentionedIds.add(id);
+        }
       }
       await members.record(groupOpenid, observed);
       const directory = new Map((await members.list(groupOpenid)).map(member => [member.member_openid, member]));

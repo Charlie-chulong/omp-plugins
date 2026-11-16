@@ -10,7 +10,7 @@ function inside(root: string, path: string) {
 }
 export function overlaps(a: string, b: string) { return inside(a, b) || inside(b, a); }
 
-const gameMethods = ['parseInput', 'handleCommand', 'handleMessage', 'resolveReview', 'getPlayer', 'close'];
+const gameMethods = ['parseInput', 'handleMessage', 'executeAction', 'context', 'feedback', 'resolveReview', 'getChoiceState', 'getSceneState', 'inspect', 'close'];
 
 export async function canonicalPath(path: string): Promise<string> {
   try { return await realpath(path); }
@@ -59,10 +59,14 @@ export async function loadGameFactory(engineDirectory: string, sandboxRoot: stri
   }
   const createGame = engine.createGame as (options: GameOptions) => unknown;
   return options => {
-    const game = createGame(options);
-    if (!game || typeof game !== 'object' || !gameMethods.every(method => typeof (game as Record<string, unknown>)[method] === 'function')) {
-      throw new Error(`游戏引擎 ${entry} 的 createGame(options) 未同步返回完整游戏 API`);
+    const instance = createGame(options);
+    const host = instance && typeof instance === 'object' && 'host' in instance ? instance.host : undefined;
+    const protocol = host && typeof host === 'object' && 'protocol' in host ? host.protocol : undefined;
+    if (!host || typeof host !== 'object' || !gameMethods.every(method => typeof (host as Record<string, unknown>)[method] === 'function')
+      || !protocol || typeof protocol !== 'object' || !('version' in protocol) || typeof protocol.version !== 'string' || !protocol.version
+      || !('prompt' in protocol) || typeof protocol.prompt !== 'string' || !protocol.prompt) {
+      throw new Error(`游戏引擎 ${entry} 的 createGame(options).host 未同步返回完整游戏 API`);
     }
-    return game as Game;
+    return host as Game;
   };
 }

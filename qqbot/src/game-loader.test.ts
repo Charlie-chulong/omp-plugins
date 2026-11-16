@@ -95,8 +95,8 @@ it('loads the real external engine through its canonical directory and preserves
   const event = { groupId: 'qq-account-group', userId: 'player', text: '我要修仙' };
   try {
     expect((await game.handleMessage(event)).handled).toBe(true);
-    expect(game.getPlayer(event.groupId, event.userId)).not.toBeNull();
-    expect(game.getPlayer('another-qq-account-group', event.userId)).toBeNull();
+    expect(game.inspect(event).player).not.toBeNull();
+    expect(game.inspect({ ...event, groupId: 'another-qq-account-group' }).player).toBeNull();
   } finally { game.close(); }
   const { createGame: reopen } = await testEngine(f.sandbox);
   const reopened = reopen({ databasePath });

@@ -17,3 +17,22 @@ it('real QQ SDK identifies, receives C2C and replies through actual protocol end
   expect(fixture.connections).toBe(1);expect(fixture.outbound).toContainEqual(expect.objectContaining({path:'/v2/users/protocol-user/messages',body:expect.objectContaining({markdown:{content:'echo:hello'}})}));
   bot.stop();await running;
 },10000);
+
+it.each(['group','c2c'])('real SDK receives a type-11 %s button callback and acknowledges the raw event id',async scope=>{
+  fixture=await startProtocolServer();
+  bot=new QQBot({appId:fixture.appId,appSecret:fixture.clientSecret,baseUrl:fixture.base,tokenBaseUrl:fixture.base,reconnect:{maxAttempts:0}});
+  const ready=new Promise(resolve=>bot.on('ready',resolve));
+  let resolveInteraction;
+  const interaction=new Promise(resolve=>{resolveInteraction=resolve;});
+  bot.on('interaction',async(_context,event)=>{await bot.acknowledgeInteraction(event.id,0);resolveInteraction(event);});
+  const running=bot.start();await ready;
+  const eventId=`native-${scope}`;
+  const response=await fetch(`${fixture.base}/__control/interaction`,{method:'POST',body:JSON.stringify({scope,peer:scope==='group'?'test-group':'test-user',sender:'test-user',eventId,data:'{"t":"game","g":9,"n":"fixture-nonce","a":"choose","i":0}'})});
+  expect(response.ok).toBe(true);
+  const event=await interaction;
+  expect(event.type).toBe(11);expect(event.scene).toBe(scope);
+  expect(scope==='group'?event.group_member_openid:event.user_openid).toBe('test-user');
+  expect(fixture.outbound.some(reply=>reply.path===`/interactions/${eventId}`&&reply.body.code===0)).toBe(true);
+  expect(fixture.outbound.some(reply=>reply.path.includes('INTERACTION_CREATE:'))).toBe(false);
+  bot.stop();await running;
+},10000);
