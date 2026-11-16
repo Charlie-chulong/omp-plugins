@@ -45,6 +45,10 @@ npm run build --workspace=@omp-desktop/plugin-desktop-pet
 
 Distribute the plugin with its runtime dependencies, including `sharp` and its native libraries for the target OS/architecture. The converter supports PNG/JPEG/WebP, keys opaque green backgrounds, and preserves already-transparent artwork. Verify the helper with the target bundled runtime rather than assuming a development Node run establishes native compatibility. Removing the plugin leaves ordinary authoring workspaces and conversations intact; helpers still require the installed plugin. Open a new authoring workspace to use updated copied instructions and scripts.
 
+Directory loading uses the service's `setup` and `manage` exports. The host injects `OMP_ELECTRON_USER_DATA_DIR` into both workers; the service reads its own library during initialization, returns validated PNG data URLs, and uses wire overlay leases. The client uses only public plugin context APIs. Update the host runtime as well as the plugin when adopting this integration; plugin reload alone cannot add the host environment or `client.identity` support.
+
+Creation controls read provider data with `agents.events`; creating a new workspace and conversation requires `agents.create`, including while the plugin is disabled. Review newly declared permissions after updating an existing installation. Opening Settings reads creation context without creating an authoring workspace; only **Create with OMP** prepares one.
+
 ## QQ message completion
 
 QQ conversations share a serial queue per peer. Timeline sequence numbers belong to an epoch; idle resume or history reconstruction can renumber them. The gateway resets its sequence and revision caches when the epoch changes and recognizes submitted inputs by `clientMessageId`, including lower-sequence events. Completing and delivering a reply releases the next queued message unless native context maintenance is required. Static delivery errors reject the input with the original error instead of silently reporting success; the generated reply remains in the Desktop conversation.

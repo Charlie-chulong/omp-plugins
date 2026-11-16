@@ -21,7 +21,7 @@ async function main() {
     decodeImage: decodePetImage,
   });
   const pet = await installPetPackage({ manifestPath, inputImage: args[1], convertImage: convertPetImage, library });
-  console.log(JSON.stringify(pet));
+  console.log(JSON.stringify({ id: pet.id, name: pet.name, description: pet.description, builtIn: pet.builtIn }));
 }
 
 void main().catch((error: unknown) => {

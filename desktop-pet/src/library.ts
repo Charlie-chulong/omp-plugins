@@ -15,7 +15,6 @@ interface PetEntry {
   manifest: PetManifest;
   spritePath: string;
   spriteDigest: string;
-  archiveMember: boolean;
   preview: Buffer;
 }
 
@@ -92,11 +91,6 @@ async function readPetEntry(directory: string, id: string, builtIn: boolean, dec
     );
   }
   const spriteDigest = createHash("sha256").update(spriteData).digest("hex");
-  const revision = createHash("sha256")
-    .update(manifestData)
-    .update(spriteDigest)
-    .digest("hex")
-    .slice(0, 16);
   const preview = image.preview;
   return {
     descriptor: {
@@ -104,8 +98,8 @@ async function readPetEntry(directory: string, id: string, builtIn: boolean, dec
       name: manifest.name,
       description: manifest.description ?? "",
       builtIn,
-      spriteUrl: `omp-desktop://app/pet-sprites/${id}.png?v=${revision}`,
-      previewUrl: `omp-desktop://app/pet-preview/${id}.png?v=${revision}`,
+      spriteUrl: `data:image/png;base64,${spriteData.toString("base64")}`,
+      previewUrl: `data:image/png;base64,${preview.toString("base64")}`,
       frameWidth: manifest.frameWidth,
       frameHeight: manifest.frameHeight,
       sheetWidth: width,
@@ -116,7 +110,6 @@ async function readPetEntry(directory: string, id: string, builtIn: boolean, dec
     manifest,
     spritePath,
     spriteDigest,
-    archiveMember,
     preview,
   };
 }
@@ -187,38 +180,6 @@ export class PetLibrary {
     return entry.descriptor;
   }
 
-  async handleResource(pathname: string): Promise<Response | null> {
-    if (!pathname.startsWith("/pet-sprites/") && !pathname.startsWith("/pet-preview/")) return null;
-    const match = /^\/pet-(sprites|preview)\/([a-z0-9][a-z0-9-]{0,80})\.png$/.exec(pathname);
-    if (!match) return new Response("Not found", { status: 404 });
-    const [, kind, id] = match;
-    try {
-      await this.getSelected(id);
-      const entry = this.entries.get(id)!;
-      const data =
-        kind === "preview"
-          ? entry.preview
-          : await readRegularFile(entry.spritePath, MAX_PET_IMAGE_BYTES, entry.archiveMember);
-      if (
-        kind === "sprites" &&
-        createHash("sha256").update(data).digest("hex") !== entry.spriteDigest
-      ) {
-        return new Response("Pet image changed; refresh the pet library", { status: 409 });
-      }
-      return new Response(
-        new Uint8Array(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength),
-        {
-          headers: {
-            "content-type": "image/png",
-            "cache-control": "private, max-age=3600",
-            "x-content-type-options": "nosniff",
-          },
-        },
-      );
-    } catch {
-      return new Response("Not found", { status: 404 });
-    }
-  }
 
   async importDirectory(directory: string): Promise<PetDescriptor> {
     if (typeof directory !== "string" || !directory.trim())
@@ -249,6 +210,10 @@ export class PetLibrary {
     return installed.descriptor;
   }
 
+  creationContext(): { cwd: string } {
+    return { cwd: this.options.userDataPath };
+  }
+
   async prepareCreation(description?: string): Promise<PetCreationWorkspace> {
     const iris = await this.getSelected("iris");
     const preview = this.entries.get(iris.id)!.preview;
@@ -259,9 +224,5 @@ export class PetLibrary {
     });
   }
 
-  async clearData(): Promise<void> {
-    await rm(this.customDirectory, { recursive: true, force: true });
-    this.entries.clear();
-  }
 }
 

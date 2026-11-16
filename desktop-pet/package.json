@@ -10,7 +10,6 @@
     ".": { "types": "./dist/types/client.d.ts", "source": "./src/client.tsx", "import": "./dist/esm/client.js", "require": "./dist/cjs/client.js", "default": "./dist/esm/client.js" },
     "./client": { "types": "./dist/types/client.d.ts", "source": "./src/client.tsx", "import": "./dist/esm/client.js", "require": "./dist/cjs/client.js", "default": "./dist/esm/client.js" },
     "./service": { "types": "./dist/types/service.d.ts", "source": "./src/service.ts", "import": "./dist/esm/service.js", "require": "./dist/cjs/service.js", "default": "./dist/esm/service.js" },
-    "./builtin": { "types": "./dist/types/builtin.d.ts", "source": "./src/builtin.ts", "import": "./dist/esm/builtin.js", "require": "./dist/cjs/builtin.js", "default": "./dist/esm/builtin.js" },
     "./config": { "types": "./dist/types/config.d.ts", "source": "./src/config.ts", "import": "./dist/esm/config.js", "require": "./dist/cjs/config.js", "default": "./dist/esm/config.js" },
     "./types": { "types": "./dist/types/types.d.ts", "source": "./src/types.ts", "import": "./dist/esm/types.js", "require": "./dist/cjs/types.js", "default": "./dist/esm/types.js" },
     "./creation": { "types": "./dist/types/creation.d.ts", "source": "./src/creation.ts", "import": "./dist/esm/creation.js", "require": "./dist/cjs/creation.js", "default": "./dist/esm/creation.js" },
@@ -24,8 +23,8 @@
     "id": "desktop-pet",
     "owner": "desktop",
     "entries": { "client": "./dist/esm/client.js", "service": "./dist/esm/service.js" },
-    "capabilities": ["native.overlay", "files.scoped", "native.dialog", "native.navigation", "agents.events"]
+    "capabilities": ["native.overlay", "files.scoped", "native.dialog", "native.navigation", "agents.events", "agents.create"]
   },
   "dependencies": { "@omp-desktop/plugin": "0.7.0", "@omp-desktop/client": "*", "@omp-desktop/protocol": "*", "sharp": "^0.35.4", "zod": "^4.4.3" },
-  "peerDependencies": { "react": "*", "react-native": "*" }
+  "peerDependencies": { "react": "*", "react-native": "*", "react-i18next": "*", "react-native-unistyles": "*" }
 }

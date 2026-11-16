@@ -3,7 +3,7 @@ import { createPetBubbleController } from "./bubble.js";
 
 // Static trusted document: descriptors and labels arrive only over the isolated preload bridge.
 export const PET_HTML = String.raw`<!doctype html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src omp-desktop:; style-src 'unsafe-inline'; script-src 'nonce-omp-pet-renderer'; connect-src 'none'"><style>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-omp-overlay-renderer'; connect-src 'none'"><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;user-select:none;font-family:'Segoe UI',sans-serif}
 #mascot{position:absolute;right:8px;bottom:8px;touch-action:none;cursor:grab}#mascot.dragging{cursor:grabbing}
 #bubble{position:absolute;z-index:1;right:8px;max-width:calc(100% - 16px);padding:var(--bubble-padding-y,9px) var(--bubble-padding-x,12px);border:1px solid var(--bubble-border,#F6A9C6);border-radius:var(--bubble-radius,14px) var(--bubble-radius,14px) 3px var(--bubble-radius,14px);background:var(--bubble-background,#FFF0E4);color:var(--bubble-foreground,#42436B);font-family:inherit;font-size:var(--bubble-font-size,12px);font-weight:var(--bubble-font-weight,600);line-height:1.4;cursor:pointer;box-sizing:border-box;text-align:left;white-space:nowrap}
@@ -19,7 +19,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 @keyframes pet-bubble-pop{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
 @media(prefers-reduced-motion:reduce){#bubble[data-entry]{animation:none}}
 #bubble:focus-visible{outline:2px solid #DFAB4D;outline-offset:2px}
-</style></head><body><button id="bubble" type="button" hidden><span id="bubble-text"></span></button><canvas id="mascot"></canvas><script nonce="omp-pet-renderer">
+</style></head><body><button id="bubble" type="button" hidden><span id="bubble-text"></span></button><canvas id="mascot"></canvas><script nonce="omp-overlay-renderer">
 const bridge=window.ompOverlay, canvas=document.getElementById('mascot'), bubble=document.getElementById('bubble'),bubbleText=document.getElementById('bubble-text');
 const ctx=canvas.getContext('2d',{willReadFrequently:true}), motion=matchMedia('(prefers-reduced-motion: reduce)');
 const sizes={small:112,medium:152,large:200},holds={idle:6000,needs_input:6000,ready:7000,blocked:9000};
@@ -218,8 +218,7 @@ function update(next){
     imageUrl=state.descriptor.spriteUrl;image=null;const generation=++loadGeneration;
     const pending=new Image();pending.onload=()=>{if(generation===loadGeneration){image=pending;const now=performance.now();syncChatter(now);renderBubble();syncPose(now);requestDraw()}};
     pending.onerror=()=>{if(generation===loadGeneration)fail(new Error('Cannot load selected companion spritesheet'))};
-    // The pet has its own origin; keep canvas pixels readable for alpha hit-testing.
-    const spriteUrl=new URL(imageUrl);spriteUrl.host=location.host;pending.src=spriteUrl.href;
+    pending.src=imageUrl;
   }
   const now=performance.now();
   syncChatter(now);renderBubble();syncPose(now);requestDraw();
