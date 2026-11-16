@@ -4,20 +4,23 @@
   "private": true,
   "type": "module",
   "files": ["dist", "src", "!src/**/*.test.*"],
-  "scripts": { "build": "npm run build --workspace=@omp-desktop/plugin && node ../../scripts/build-desktop-plugins.mjs plugins/agent-speed", "prepack": "npm run build" },
+  "scripts": { "build": "npm run build --workspace=@omp-desktop/plugin && node build.mjs", "prepack": "npm run build" },
   "exports": {
     ".": { "types": "./dist/types/index.d.ts", "source": "./src/index.tsx", "import": "./dist/esm/index.js", "require": "./dist/cjs/index.js", "default": "./dist/esm/index.js" },
-    "./builtin": { "types": "./dist/types/builtin.d.ts", "source": "./src/builtin.ts", "import": "./dist/esm/builtin.js", "require": "./dist/cjs/builtin.js", "default": "./dist/esm/builtin.js" },
     "./metrics": { "types": "./dist/types/metrics.d.ts", "source": "./src/metrics.ts", "import": "./dist/esm/metrics.js", "require": "./dist/cjs/metrics.js", "default": "./dist/esm/metrics.js" },
     "./completed": { "types": "./dist/types/completed.d.ts", "source": "./src/completed.ts", "import": "./dist/esm/completed.js", "require": "./dist/cjs/completed.js", "default": "./dist/esm/completed.js" },
+    "./native": { "types": "./dist/types/native.d.ts", "source": "./src/native.ts", "import": "./dist/cjs/native.js", "require": "./dist/cjs/native.js", "default": "./dist/cjs/native.js" },
+    "./rpc": { "types": "./dist/types/rpc.d.ts", "source": "./src/rpc.ts", "import": "./dist/esm/rpc.js", "require": "./dist/cjs/rpc.js", "default": "./dist/esm/rpc.js" },
     "./package.json": "./package.json"
   },
   "ompDesktop": {
     "id": "agent-speed",
     "apiVersion": 1,
     "owner": "desktop",
-    "entries": { "client": "./dist/esm/index.js" },
-    "capabilities": []
+    "entries": { "client": "./dist/esm/index.js", "native": "./dist/cjs/native.js" },
+    "capabilities": ["native.main"]
   },
+  "dependencies": { "koffi": "3.3.4", "zod": "^4.4.3" },
+  "devDependencies": { "esbuild": "0.28.2", "electron": "^41.2.0" },
   "peerDependencies": { "@omp-desktop/plugin": "*", "@omp-desktop/protocol": "*", "react": "*", "react-native": "*", "react-i18next": "*", "react-native-unistyles": "*" }
 }

@@ -2,7 +2,7 @@
 
 Optional folder-installed plugins and source examples for [OMP Desktop](https://github.com/iris-cat-dev/omp).
 
-- `agent-speed/`: live agent output speed.
+- `agent-speed/`: conversation output speed, native local monitor, floating orbs and leaderboards.
 - `wallpaper/`: wallpaper selection and rendering.
 - `desktop-pet/`: desktop pet, authoring workflow, and bundled Iris assets.
 - `qqbot/`: QQ gateway, account UI, and agent conversations.
@@ -19,7 +19,8 @@ From the Desktop checkout root:
 git submodule update --init --recursive
 npm install
 npm run build:plugin
-node scripts/build-desktop-plugins.mjs plugins/agent-speed plugins/wallpaper plugins/desktop-pet
+node plugins/agent-speed/build.mjs
+node scripts/build-desktop-plugins.mjs plugins/wallpaper plugins/desktop-pet
 node plugins/qqbot/build.mjs
 node plugins/schedules/build.mjs
 npx tsc --noEmit -p packages/plugin/tsconfig.examples.json
@@ -30,6 +31,18 @@ Source-plugin examples use an id-only `omp-plugin.json` and import `@omp-desktop
 Plugin callbacks access the host through `context.omp`; React surfaces use `useOmp()`. The client SDK exposes `OmpApi`, `OmpAgent`, `createOmpApi()` and `createOmpClient()`. The pet authoring helper and Desktop development launcher use `OMP_ELECTRON_USER_DATA_DIR` to select the user-data directory. Plugin hosts and callers must use these names together; obsolete aliases are not provided.
 
 Commit and push changes here before updating Desktop's submodule pointer. Generated `dist/` and `node_modules/` directories stay out of this repository.
+
+## Agent Speed native monitor
+
+Build `agent-speed/`, then install that folder in **Host Settings → Plugins**. Review and grant `native.main`, then enable the installation. Existing installations need their folder metadata reloaded after upgrading Desktop; older hosts cannot load `entries.native`. Restart the updated Desktop before enabling the native entry.
+
+`native.main` runs trusted plugin code in Desktop's main process, not an isolated worker. The host owns its document URLs, tray items and activation lifetime. Agent Speed owns its collector, workers, native windows, dashboard, up to eight floating orbs, boards/leaderboards, history and CSV export, pricing, performance cards, title themes and settings. Open it from **Agent Speed…** in the tray/menu bar, the command center or its plugin settings page. Conversation live/average speed remains available in Desktop when the optional plugin is disabled.
+
+For the default `agent-speed` installation, first native activation copies `userData/local-monitor` only when its native data directory is absent. Window state, settings, history, pricing caches and custom titles are copied unchanged; existing plugin data and legacy originals are preserved. Native state lives in `userData/desktop-plugins/data/agent-speed/native`. The one-time decision is stored separately in `userData/desktop-plugins/agent-speed-legacy-migration.json`, outside the entire installation data subtree.
+
+Disabling or reloading saves pending preferences and stops native resources. **Clear data** follows the existing host contract: disable the installation and remove its data/configuration. Re-enabling starts fresh; the durable migration marker prevents cleared legacy contents from being imported again.
+
+Native entry points and the bundled preload are built by `node plugins/agent-speed/build.mjs`; the generic folder builder alone does not produce that preload. Integration and Windows surface qualification commands are in Desktop's `docs/development.md`.
 
 ## Desktop pet authoring
 

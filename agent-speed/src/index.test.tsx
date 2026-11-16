@@ -17,8 +17,9 @@ afterEach(cleanup);
 
 function context() {
   const addTurnMetric = vi.fn((_contribution: PluginTurnMetricContribution) => vi.fn());
-  const ctx = { mode: "active", signal: new AbortController().signal, addTurnMetric } as unknown as PluginClientContext;
-  return { ctx, addTurnMetric };
+  const addSettingsPage = vi.fn(() => vi.fn());
+  const ctx = { mode: "active", signal: new AbortController().signal, addTurnMetric, addSettingsPage } as unknown as PluginClientContext;
+  return { ctx, addTurnMetric, addSettingsPage };
 }
 function props(active = false): PluginTurnMetricProps {
   const now = Date.now();

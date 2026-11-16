@@ -2,12 +2,17 @@ import React from "react";
 import { Platform, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
-import type { PluginClientContext, PluginTurnMetricProps } from "@omp-desktop/plugin";
+import type { PluginClientContext, PluginSettingsPageProps, PluginTurnMetricProps } from "@omp-desktop/plugin";
 import { calculateCompletedOutputRate } from "./completed";
 import { formatOutputTokenSpeed } from "./metrics";
 import { turnMetricKey, useOutputRate } from "./use-output-rate";
+import { AgentSpeedSettings } from "./settings.js";
 
 export default function setup(ctx: PluginClientContext) {
+  function Settings(props: PluginSettingsPageProps) {
+    return <AgentSpeedSettings {...props} context={ctx} />;
+  }
+  ctx.addSettingsPage({ id: "monitor", title: "Agent Speed", icon: "Gauge", Component: Settings });
   if (ctx.mode !== "active") return;
   function AgentSpeedMetric(props: PluginTurnMetricProps) {
     const { t, i18n } = useTranslation();
