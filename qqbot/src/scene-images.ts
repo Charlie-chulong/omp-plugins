@@ -153,7 +153,7 @@ export class SceneImages {
     try {
       const config = await wait(gameParentConfiguration(parent));
       check();
-      if (config.cwd !== this.root || config.sandbox?.root !== this.root) throw new Error('场景绘图父会话未确认当前沙箱。');
+      if (config.cwd !== this.root || (peer.sandbox ? config.sandbox?.root !== this.root : config.sandbox !== undefined)) throw new Error('场景绘图父会话未确认当前 QQ 沙箱开启或关闭状态。');
       creating = this.omp.agents.create({
         parent, cwd: this.root, background: true, notifyOnFinish: false,
         config: {
@@ -184,7 +184,8 @@ export class SceneImages {
         }
       }).then(value => { observation = value; return value; });
       await wait(observing); check();
-      if (observation!.snapshot.sandbox?.root !== this.root || observation!.snapshot.sandbox.imageGeneration !== true
+      const sandbox = observation!.snapshot.sandbox;
+      if (sandbox?.root !== this.root || sandbox.imageGeneration !== true || sandbox.javascript === true || sandbox.network === 'public'
         || observation!.snapshot.activeTurn) throw new Error('场景绘图子会话沙箱或空闲状态未确认。');
       for (const pending of observation!.snapshot.pendingPermissions) permission(pending);
       check();

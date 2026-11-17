@@ -58,7 +58,7 @@ class Runtime {
       case 'bind':case 'refresh':this.accountEpoch++;this.binding.start();break;
       case 'unbind':{const state=(await this.store.read()).values;const appId=state.config.appId;const version=state.credentialVersions[appId];await this.store.mutate(s=>{switchAccount(s,'');delete s.credentialVersions[appId];s.access.revision++;},value.accessRevision);this.accountEpoch++;this.binding.dispose();this.stopGateway();this.pairing.clear();if(appId&&version!==undefined)await this.ctx.secrets.delete(`app-secret:${appId}:${version}`);break;}
       case 'replace':{const secret=value.credentialKey?await this.ctx.secrets.get(value.credentialKey):undefined;if(value.credentialKey&&secret===null)throw new Error('凭据提交已过期，请重新输入');try{await this.commit(value.appId,secret??undefined,value.accessRevision,s=>{switchAccount(s,value.appId);s.access.revision++;});}finally{if(value.credentialKey)await this.ctx.secrets.delete(value.credentialKey);}this.accountEpoch++;this.binding.dispose();this.stopGateway();this.lastConfig='';this.pairing.clear();break;}
-      case 'configure':{const previous=(await this.store.read()).values.config.sandboxPath;await this.store.mutate(s=>{if(s.config.appId!==value.config.appId)throw new Error('账号替换请使用专用账号操作');s.config=value.config;s.access.revision++;},value.accessRevision);if(previous!==value.config.sandboxPath)this.stopGateway();break;}
+      case 'configure':{await this.store.mutate(s=>{if(s.config.appId!==value.config.appId)throw new Error('账号替换请使用专用账号操作');s.config=value.config;s.access.revision++;},value.accessRevision);break;}
       case 'access':await this.store.mutate(s=>{s.access={...value.access,revision:s.access.revision+1};},value.accessRevision);break;
       case 'pair':if(this.ctx.role!=='service')throw new Error('启用 QQ 网关后才能生成可认领的配对码');if((await this.store.read()).values.access.revision!==value.accessRevision)throw new Error('ACCESS_REVISION_CONFLICT');await this.pairing.issue(value.purpose);break;
       case 'end-pair':this.pairing.challenges.delete(value.code);break;
@@ -76,6 +76,9 @@ class Runtime {
     const state=(await this.store.read()).values;const config=state.config;const version=state.credentialVersions[config.appId];const secret=config.appId&&version!==undefined?await this.ctx.secrets.get(`app-secret:${config.appId}:${version}`):null;
     if(this.disposed||this.ctx.signal.aborted)return;
     const encoded=JSON.stringify(config);if(encoded===this.lastConfig&&secret===this.lastSecret)return;
+    const previous: State['config'] | null = this.lastConfig ? JSON.parse(this.lastConfig) : null;
+    if(this.gateway&&previous&&(previous.sandboxEnabled!==config.sandboxEnabled||previous.sandboxPath!==config.sandboxPath||JSON.stringify(previous.sandboxCapabilities)!==JSON.stringify(config.sandboxCapabilities)))await this.gateway.retire();
+    if(this.disposed||this.ctx.signal.aborted)return;
     this.stopGateway();this.lastConfig=encoded;this.lastSecret=secret;
     if(!config.appId||!secret){this.reason='等待 QQ AppID 与 AppSecret；可在插件设置中扫码或手动绑定。';this.ctx.waiting(this.reason);return;}
     this.ctx.waiting(null);

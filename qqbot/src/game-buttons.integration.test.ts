@@ -77,14 +77,14 @@ interface StagedSdk {
 }
 let stagedSdk: Promise<StagedSdk> | undefined;
 
-async function imageFixture(root: string) {
+async function sandboxFixture(root: string, maxBytes: number) {
   const sdkRoot = process.env.OMP_DESKTOP_TEST_SDK_ROOT;
   if (!sdkRoot || !isAbsolute(sdkRoot) || !existsSync(join(sdkRoot, 'dist/node/modules.json'))) {
     throw new Error('Native rift image integration requires OMP_DESKTOP_TEST_SDK_ROOT pointing to the installed Desktop Node SDK.');
   }
   stagedSdk ??= import(/* @vite-ignore */ pathToFileURL(join(sdkRoot, 'dist/node/sdk.mjs')).href) as Promise<StagedSdk>;
   const sdk = await stagedSdk;
-  const pinned = await sdk.openSandboxFs({ root, maxBytes: 8 * 1024 * 1024 });
+  const pinned = await sdk.openSandboxFs({ root, maxBytes });
   const native = { invoke: async (operation: string, input: unknown) => {
     if (operation !== 'files.sandbox') throw new Error(`Unexpected native operation: ${operation}`);
     const request = input as { action: string; path: string; contentBase64: string; maxBytes: number; exclusive: boolean };
@@ -97,8 +97,13 @@ async function imageFixture(root: string) {
     if (request.action === 'remove') { pinned.remove(request.path); return { ok: true }; }
     throw new Error(`Unexpected sandbox action: ${request.action}`);
   } } as PluginNativeApi;
-  const files = await SandboxFiles.open(native, root, 8 * 1024 * 1024);
+  const files = await SandboxFiles.open(native, root, maxBytes);
   cleanups.push(() => files.close());
+  return { sdk, native, files };
+}
+
+async function imageFixture(root: string) {
+  const { sdk, native, files } = await sandboxFixture(root, 8 * 1024 * 1024);
   const png = png512(); validateSceneImage(png);
   const entered = Promise.withResolvers<void>();
   void entered.promise.catch(() => {});
@@ -159,9 +164,11 @@ async function fixture(scope: 'group' | 'c2c' = 'group', textChunkLimit = 4500, 
   const store = new StateStore({ get: async () => ({ revision: 0, values: structuredClone(values) }), patch: async (patch: unknown) => { values = StateSchema.parse(patch); return { revision: 0, values }; } } as PluginStorage);
   const reviewResponses = [JSON.stringify(scene)];
   const reviewEntered = Promise.withResolvers<void>();
+  void reviewEntered.promise.catch(() => {});
   let reviewGate: Promise<void> | undefined;
-  let heldReviewEntered: (() => void) | undefined;
+  let heldReviewEntered: PromiseWithResolvers<void> | undefined;
   const images = imageGeneration ? await imageFixture(root) : undefined;
+  const mediaFiles = images ?? await sandboxFixture(root, values.config.media.maxMB * 1024 * 1024);
   const imageWork: Promise<unknown>[] = [];
   const imageChildren: Array<{ id: string; stop: Mock<() => Promise<void>>; archive: Mock<() => Promise<{ archivedAt: string }>>; unsubscribe: Mock<() => void> }> = [];
   const create = vi.fn(async (options: OmpAgentCreateOptions) => {
@@ -196,16 +203,18 @@ async function fixture(scope: 'group' | 'c2c' = 'group', textChunkLimit = 4500, 
       imageChildren.push(child); return child;
     }
     let text = '';
-    const snapshot = { pendingPermissions: [], activeTurn: null, status: 'idle' };
+    const snapshot = { pendingPermissions: [], activeTurn: null, status: 'idle', sandbox: options.config?.sandbox };
     return { id: 'scene-review', observe: async () => ({ snapshot, unsubscribe: () => {}, timeline: {} }),
-      run: async () => { reviewEntered.resolve(); heldReviewEntered?.(); heldReviewEntered = undefined; await reviewGate; const response = reviewResponses.shift(); if (response === undefined) throw new Error('Review fixture exhausted'); text = response; return { status: 'idle', error: null, final: snapshot }; },
+      run: async () => { reviewEntered.resolve(); heldReviewEntered?.resolve(); heldReviewEntered = undefined; await reviewGate; const response = reviewResponses.shift(); if (response === undefined) throw new Error('Review fixture exhausted'); text = response; return { status: 'idle', error: null, final: snapshot }; },
       timeline: { refetch: async () => ({ entries: [{ seqStart: 1, seqEnd: 1, item: { type: 'assistant_message', text, messageId: 'review-result' } }], error: null, hasOlder: false, hasNewer: false, gap: false }) },
       stop: async () => {}, archive: async () => ({ archivedAt: '2026-11-14T01:00:00Z' }), respondToPermission: async () => {} };
   });
-  const ctx = { signal: new AbortController().signal, installation: { id: 'buttons-fixture', generation: 9 }, native: images?.native,
+  const ctx = { signal: new AbortController().signal, installation: { id: 'buttons-fixture', generation: 9 }, native: mediaFiles.native,
     omp: { hostId: 'host', agents: { create, ref: () => { throw new Error('Unexpected parent ref'); } } } } as unknown as PluginServiceContext;
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn((message: string) => {
-    images?.entered.reject(new Error(message)); imageDelivered.reject(new Error(message));
+    const error = new Error(message);
+    reviewEntered.reject(error); heldReviewEntered?.reject(error); heldReviewEntered = undefined;
+    images?.entered.reject(error); imageDelivered.reject(error);
   }) };
   const requests: NativeRequest[] = [];
   let failMessage: Error | undefined;
@@ -266,7 +275,7 @@ async function fixture(scope: 'group' | 'c2c' = 'group', textChunkLimit = 4500, 
     event(route: typeof route, stream: OmpAgentStream): Promise<void>;
   };
   internal.game = game.host;
-  internal.root = root; internal.files = images?.files ?? null;
+  internal.root = root; internal.files = mediaFiles.files;
   internal.routes.set(peerKey(peer.appId, peer.scope, peer.openid), route);
   vi.spyOn(internal, 'getOrCreate').mockResolvedValue(route);
   const sceneResults: Array<{ senderId: string; result: GameResult }> = [];
@@ -403,7 +412,7 @@ async function fixture(scope: 'group' | 'c2c' = 'group', textChunkLimit = 4500, 
     holdMaterial: (stage: MaterialStage, hook: () => Promise<void>) => { if (stage === 'put') images!.holdUpload(hook); else materialHooks.set(stage, hook); },
     failMaterial: (stage: MaterialStage) => { if (stage === 'put') images!.failUpload(); else materialFailure = stage; },
     beforeSceneSend: (hook: () => Promise<void>) => { beforeSceneSend = hook; },
-    holdReview: (gate: Promise<void>) => { reviewGate = gate; const entered = Promise.withResolvers<void>(); heldReviewEntered = entered.resolve; return entered.promise; }, failNextMessage: (error: Error, keyboardOnly = false) => { failMessage = error; failKeyboardOnly = keyboardOnly; } };
+    holdReview: (gate: Promise<void>) => { reviewGate = gate; const entered = Promise.withResolvers<void>(); void entered.promise.catch(() => {}); heldReviewEntered = entered; return entered.promise; }, failNextMessage: (error: Error, keyboardOnly = false) => { failMessage = error; failKeyboardOnly = keyboardOnly; } };
 }
 
 it.each(['group', 'c2c'] as const)('real %s inbound choices produce native buttons and a click settles the original player once', async scope => {

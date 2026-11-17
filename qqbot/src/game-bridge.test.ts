@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PluginServiceContext, PluginStorage } from '@omp-desktop/plugin/server';
 import type { MiddlewareContext, QQBot, QQBotInboundMessage } from '@tencent-connect/qqbot-nodejs';
-import type { OmpAgentStream } from '@omp-desktop/client';
+import type { OmpAgentCreateOptions, OmpAgentStream } from '@omp-desktop/client';
 import { Gateway } from './gateway.ts';
 import { Pairing, StateSchema, StateStore, peerKey, type Peer } from './state.ts';
 import type { Game, GameReviewRequest } from './game-api.ts';
@@ -18,18 +18,24 @@ const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 async function fixture(responses: string[], enabled = true) {
-  const root = await mkdtemp(join(tmpdir(), 'qqbot-bridge-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'qqbot-bridge-')));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const databasePath = join(root, 'fixture.sqlite');
   const { createGame, openStore, data } = await testEngine(root);
   const random = vi.fn(() => 0);
   let timestamp = Date.parse('2026-11-13T01:00:00Z');
   const game = createGame({ databasePath, now: () => timestamp, random });
-  let values = StateSchema.parse({ config: { appId: 'app', game: { enabled, engineDirectory: testEngineDirectory }, streaming: false, autoCompactTokens: 0 }, access: { commandMode: 'allowlist', owners: [{ openid: 'iris', scene: 'group', groupOpenid: 'group', claimedAt: 1 }] } });
+  let values = StateSchema.parse({ config: { appId: 'app', sandboxPath: root, game: { enabled, engineDirectory: testEngineDirectory }, streaming: false, autoCompactTokens: 0 }, access: { commandMode: 'allowlist', owners: [{ openid: 'iris', scene: 'group', groupOpenid: 'group', claimedAt: 1 }] } });
   const store = new StateStore({ get: async () => ({ revision: 0, values: structuredClone(values) }), patch: async (patch: unknown) => { values = StateSchema.parse(patch); return { revision: 0, values }; } } as PluginStorage);
-  const ctx = { signal: new AbortController().signal, installation: { id: 'bridge-test', generation: 1 }, omp: { hostId: 'host', agents: { create: async () => {
+  const native = { invoke: vi.fn(async (operation: string, input: unknown) => {
+    if(operation!=='files.sandbox'||!input||typeof input!=='object'||!('action' in input))throw new Error('Unexpected native operation');
+    if(input.action==='open')return{handle:'bridge-pinned'};
+    if(input.action==='close')return{ok:true};
+    throw new Error(`Unexpected sandbox action: ${String(input.action)}`);
+  }) };
+  const ctx = { signal: new AbortController().signal, installation: { id: 'bridge-test', generation: 1 }, native, omp: { hostId: 'host', agents: { create: async (options: OmpAgentCreateOptions) => {
     let text='';
-    const snapshot={pendingPermissions:[],activeTurn:null,status:'idle'};
+    const snapshot={sandbox:options.config?.sandbox,pendingPermissions:[],activeTurn:null,status:'idle'};
     return {id:'review-child',observe:async()=>({snapshot,unsubscribe:()=>{},timeline:{}}),
       run:async()=>{const response=responses.shift();if(response===undefined)throw new Error('Fixture review response exhausted');text=response;return{status:'idle',error:null,final:snapshot};},
       timeline:{refetch:async()=>({entries:[{seqStart:1,seqEnd:1,item:{type:'assistant_message',text,messageId:'review-result'}}],error:null,hasOlder:false,hasNewer:false,gap:false})},
@@ -89,7 +95,7 @@ async function fixture(responses: string[], enabled = true) {
     return game.resolveReview({ groupId, userId: 'player', kind: 'adventure', requestId: result.reviewRequest!.requestId,
       revision: result.reviewRequest!.revision, review: adventureScene });
   };
-  return { gateway, internal, game, store, route, agent, sent, message, ingest, event, player, ready, prepareCultivation, startAdventure, logger,
+  return { gateway, internal, game, store, route, agent, native, sent, message, ingest, event, player, ready, prepareCultivation, startAdventure, logger,
     advanceTime: (milliseconds: number) => { timestamp += milliseconds; }, processingTimeoutMs: values.config.processingTimeoutMs };
 }
 

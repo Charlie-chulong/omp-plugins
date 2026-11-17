@@ -30,7 +30,46 @@ it('import does not overwrite a newer peer preference written while credentials 
 
 it('saving sandbox path through management preserves credentials, access and model preferences',async()=>{const f=fixture();await f.call(action,{kind:'manual',purpose:'owner',text:'owner:Alice',accessRevision:0});const stored=await f.context.storage.get();await f.context.storage.patch({modelSelections:{peer:'provider/model'}},stored.revision);const before=f.read();const result=await f.call(action,{kind:'configure',config:{...before.config,sandboxPath:'/dedicated-qq-root'},accessRevision:before.access.revision});expect(result.config.sandboxPath).toBe('/dedicated-qq-root');expect(result.appId).toBe('local-account');expect(result.secretConfigured).toBe(true);expect(f.secrets.get('app-secret:local-account:0')).toBe('private-fixture-secret');expect(f.read().access.owners).toEqual(before.access.owners);expect(f.read().modelSelections).toEqual(before.modelSelections);await expect(f.call(action,{kind:'configure',config:{...result.config,appId:'other-account'},accessRevision:result.access.revision})).rejects.toThrow('专用账号操作');expect(f.read().config.appId).toBe('local-account');});
 
-it('configure RPC rejects host tools and sandbox opt-out before settings mutation',async()=>{const f=fixture();const before=f.read();for(const preset of [{name:'default',config:{provider:'omp',sandbox:null}},{name:'default',config:{provider:'omp',mcpServers:{}}},{name:'default',config:{provider:'omp'},qq:{tools:['qqbot_send_file']}},{name:'default',config:{provider:'omp'},qq:{skills:['host-skill']}}]){expect(()=>action.input.parse({kind:'configure',config:{...before.config,presets:[preset]},accessRevision:0})).toThrow();}expect(f.read()).toEqual(before);});
+it('configure RPC rejects preset sandbox overrides and extra host capabilities before settings mutation',async()=>{const f=fixture();const before=f.read();for(const preset of [{name:'default',config:{provider:'omp',sandbox:null}},{name:'default',config:{provider:'omp',mcpServers:{}}},{name:'default',config:{provider:'omp'},qq:{tools:['qqbot_send_file']}},{name:'default',config:{provider:'omp'},qq:{skills:['host-skill']}}]){expect(()=>action.input.parse({kind:'configure',config:{...before.config,sandboxEnabled:false,presets:[preset]},accessRevision:0})).toThrow();}expect(f.read()).toEqual(before);});
+
+it('management saves both sandbox modes without changing account lists, credentials or peer history',async()=>{
+  const f=fixture();await f.call(action,{kind:'manual',purpose:'owner',text:'owner:Alice',accessRevision:0});
+  const stored=await f.context.storage.get();
+  await f.context.storage.patch({accountAccess:{other:{revision:3,c2cMode:'allowlist',owners:[{openid:'other-owner',scene:'c2c',claimedAt:1}]}},modelSelections:{peer:'provider/model'},presetSelections:{peer:'default'},peers:{peer:{appId:'local-account',scope:'c2c',openid:'peer',hostId:'host',workspaceId:'old-workspace',agentId:'old-agent',cwd:'/qq-root',sandbox:{root:'/qq-root'},preset:'default',template:f.read().config.presets[0],protocolPrompt:'QQ',lastDeliveredSequence:9}}},stored.revision);
+  const before=f.read();
+  for(const sandboxEnabled of [false,true]){
+    const current=f.read();const result=await f.call(action,{kind:'configure',config:{...current.config,sandboxEnabled},accessRevision:current.access.revision});
+    expect(result.config.sandboxEnabled).toBe(sandboxEnabled);expect(result.appId).toBe(before.config.appId);expect(result.secretConfigured).toBe(true);
+    expect(f.read().access.owners).toEqual(before.access.owners);expect(f.read().accountAccess).toEqual(before.accountAccess);expect(f.read().peers).toEqual(before.peers);
+    expect(f.read().modelSelections).toEqual(before.modelSelections);expect(f.read().presetSelections).toEqual(before.presetSelections);expect(f.read().credentialVersions).toEqual(before.credentialVersions);
+  }
+});
+
+it('service waits for old gateway retirement before starting either replacement mode',async()=>{
+  vi.useFakeTimers();const started=vi.spyOn(Gateway.prototype,'start').mockResolvedValue();
+  const retired=vi.spyOn(Gateway.prototype,'retire').mockResolvedValue();const f=fixture('service');await vi.advanceTimersByTimeAsync(0);
+  expect(started).toHaveBeenCalledOnce();
+  for(const sandboxEnabled of [false,true]){
+    const before=f.read();const waiting=Promise.withResolvers<void>();const entered=Promise.withResolvers<void>();
+    retired.mockImplementationOnce(()=>{entered.resolve();return waiting.promise;});
+    const count=started.mock.calls.length;const saving=f.call(action,{kind:'configure',config:{...before.config,sandboxEnabled},accessRevision:before.access.revision});
+    await entered.promise;expect(f.read().config.sandboxEnabled).toBe(sandboxEnabled);expect(started).toHaveBeenCalledTimes(count);
+    waiting.resolve();await saving;expect(started).toHaveBeenCalledTimes(count+1);
+    expect(f.read().config.appId).toBe(before.config.appId);expect(f.read().credentialVersions).toEqual(before.credentialVersions);expect(f.read().access.owners).toEqual(before.access.owners);
+  }
+  const before=f.read();await expect(f.call(action,{kind:'configure',config:{...before.config,sandboxEnabled:false},accessRevision:0})).rejects.toThrow('ACCESS_REVISION_CONFLICT');
+  expect(retired).toHaveBeenCalledTimes(2);expect(started).toHaveBeenCalledTimes(3);expect(f.read().config.sandboxEnabled).toBe(true);f.controller.abort();
+});
+
+it('cancellation while retiring a gateway cannot start a replacement generation',async()=>{
+  vi.useFakeTimers();const started=vi.spyOn(Gateway.prototype,'start').mockResolvedValue();
+  const waiting=Promise.withResolvers<void>();const entered=Promise.withResolvers<void>();
+  vi.spyOn(Gateway.prototype,'retire').mockImplementation(()=>{entered.resolve();return waiting.promise;});
+  const f=fixture('service');await vi.advanceTimersByTimeAsync(0);
+  const before=f.read();const saving=f.call(action,{kind:'configure',config:{...before.config,sandboxEnabled:false},accessRevision:before.access.revision});
+  await entered.promise;f.controller.abort();waiting.resolve();await saving;
+  expect(started).toHaveBeenCalledOnce();expect(f.read().config.sandboxEnabled).toBe(false);expect(f.read().credentialVersions).toEqual(before.credentialVersions);
+});
 
 it('permanent gateway preparation failure does not loop and explicit restart retries it',async()=>{
   vi.useFakeTimers();

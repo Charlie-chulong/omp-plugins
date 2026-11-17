@@ -23,7 +23,7 @@ async function fixture() {
 
 it('outside media is rejected despite extraRoots and never reaches a native read',async()=>{
   const f=await fixture();
-  for(const path of ['/outside/file.txt','/qq-private-root-escape/file.txt','../file.txt','folder/../file.txt','ssh://host/file','C:\\Windows\\file','\\\\host\\share','file\0.txt'])await expect(allowedFile(path,peer,config,f.files)).rejects.toThrow();
+  for(const path of ['/outside/file.txt','/qq-private-root-escape/file.txt','../file.txt','folder/../file.txt','ssh://host/file','C:\\Windows\\file','\\\\host\\share','file\0.txt','image.png:secret','folder/image.png:secret'])await expect(allowedFile(path,peer,config,f.files)).rejects.toThrow();
   expect(f.invoke.mock.calls.filter(([,input])=>input&&typeof input==='object'&&'action' in input&&input.action==='read')).toEqual([]);
 });
 
@@ -31,7 +31,8 @@ it('trusted inside metadata maps to a relative pinned read and returns byte snap
   const f=await fixture();
   expect((await allowedFile(`${root}/image.png`,peer,config,f.files)).toString()).toBe('inside-canary');
   expect(f.invoke).toHaveBeenLastCalledWith('files.sandbox',{action:'read',handle:'pinned',path:'image.png',maxBytes:1024*1024});
-  await expect(allowedFile('image.png',{...peer,sandbox:undefined},config,f.files)).rejects.toThrow('已确认');
+  expect((await allowedFile('image.png',{...peer,sandbox:undefined},config,f.files)).toString()).toBe('inside-canary');
+  await expect(allowedFile('image.png',{...peer,cwd:'/other-root',sandbox:undefined},config,f.files)).rejects.toThrow('安全句柄');
 });
 
 it('downloads only bounded HTTPS QQ bytes with exclusive descriptor-bound writes',async()=>{

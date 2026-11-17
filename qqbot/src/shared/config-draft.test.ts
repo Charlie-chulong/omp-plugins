@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { ConfigSchema } from '../state.ts';
-import { editSandboxCapability, editSandboxPath, parseConfigDraft } from './config-draft.ts';
+import { editSandboxEnabled, editSandboxCapability, editSandboxPath, parseConfigDraft } from './config-draft.ts';
 
 it('edits the one JSON draft without changing account, prompt or model config', () => {
   const before = ConfigSchema.parse({ appId: 'saved-app', cwd: '/legacy-root', presets: [{ name: 'default', config: { provider: 'omp/provider/model', thinkingOptionId: 'high', systemPrompt: 'Keep this' } }] });
@@ -8,6 +8,16 @@ it('edits the one JSON draft without changing account, prompt or model config', 
   expect(parseConfigDraft(text)).toEqual({ ...before, sandboxPath: '/new-root' });
   expect(JSON.parse(text)).not.toHaveProperty('cwd');
   expect(parseConfigDraft(editSandboxPath(text, ''))?.sandboxPath).toBe('');
+});
+
+it('keeps sandbox enabled for old drafts and saves both toggle directions in the same JSON', () => {
+  const before = ConfigSchema.parse({ appId: 'saved-app', sandboxPath: '/qq-root', sandboxCapabilities: { javascript: true, network: true, imageGeneration: true }, presets: [{ name: 'default', config: { provider: 'omp/provider/model', thinkingOptionId: 'high', systemPrompt: 'Keep this' } }] });
+  expect(before.sandboxEnabled).toBe(true);
+  const disabled = editSandboxEnabled(JSON.stringify(before), false);
+  expect(parseConfigDraft(disabled)).toEqual({ ...before, sandboxEnabled: false });
+  expect(parseConfigDraft(editSandboxEnabled(disabled, true))).toEqual(before);
+  expect(() => editSandboxEnabled('{broken', false)).toThrow();
+  expect(parseConfigDraft('{"sandboxEnabled":"false"}')).toBeNull();
 });
 
 it('does not replace an invalid JSON draft with a default config', () => {

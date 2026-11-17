@@ -4,6 +4,11 @@ export function parseConfigDraft(text: string): Config | null {
   try { return ConfigSchema.parse(JSON.parse(text)); } catch { return null; }
 }
 
+export function editSandboxEnabled(text: string, sandboxEnabled: boolean): string {
+  const config = ConfigSchema.parse(JSON.parse(text));
+  return JSON.stringify({ ...config, sandboxEnabled }, null, 2);
+}
+
 export function editSandboxPath(text: string, sandboxPath: string): string {
   const config = ConfigSchema.parse(JSON.parse(text));
   return JSON.stringify({ ...config, sandboxPath }, null, 2);

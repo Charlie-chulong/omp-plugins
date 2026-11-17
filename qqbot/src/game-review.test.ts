@@ -35,7 +35,7 @@ function fixture() {
   const controller = new AbortController();
   const order: string[] = [];
   let receive: ((stream: OmpAgentStream) => void) | undefined;
-  const snapshot = { id: 'review-child', pendingPermissions: [], status: 'idle' } as unknown as OmpAgentObservation['snapshot'];
+  const snapshot = { id: 'review-child', sandbox: { root: '/qq-sandbox' }, activeTurn: null, pendingPermissions: [], status: 'idle' } as unknown as OmpAgentObservation['snapshot'];
   const unsubscribe = vi.fn(() => { order.push('unsubscribe'); receive = undefined; });
   const observation: OmpAgentObservation = { snapshot, timeline: page(), unsubscribe };
   const result: OmpAgentRunResult = { status: 'idle', final: snapshot, error: null, lastMessage: 'INCOMPLETE_LAST_MESSAGE', finalText: 'INCOMPLETE_FINAL_TEXT' };
@@ -121,6 +121,20 @@ it('preserves separate assistant messages and invalid JSON for the engine instea
   ]));
   expect(await runGameReview(f.options)).toEqual({ text: '{"reason":\ninvalid JSON trailing text', messageCount: 2 });
   expectReleased(f, false);
+});
+
+it('keeps the review child sandboxed even when the ordinary QQ parent has no sandbox',async()=>{
+  const f=fixture();
+  f.parent.configuration.mockResolvedValue({...config,cwd:'/qq-sandbox',sandbox:undefined});
+  await runGameReview(f.options);
+  expect(f.create.mock.calls[0]?.[0].config).toMatchObject({modeId:'ask',sandbox:{root:'/qq-sandbox'},mcpServers:{}});
+  expect(f.create.mock.calls[0]?.[0].config).not.toHaveProperty('toolPolicy');
+});
+
+it.each([undefined,{root:'/elsewhere'},{root:'/qq-sandbox',javascript:true},{root:'/qq-sandbox',network:'public'},{root:'/qq-sandbox',imageGeneration:true}])('rejects an unconfirmed restricted review sandbox %s before submitting input',async sandbox=>{
+  const f=fixture();f.observation.snapshot={...f.observation.snapshot,sandbox} as OmpAgentObservation['snapshot'];
+  await expect(runGameReview(f.options)).rejects.toThrow('沙箱或空闲状态未确认');
+  expect(f.child.run).not.toHaveBeenCalled();expectReleased(f,true);
 });
 
 it.each(['tool', 'plan', 'question', 'mode', 'other'] as const)('denies %s permissions and discards even apparent successful output', async kind => {

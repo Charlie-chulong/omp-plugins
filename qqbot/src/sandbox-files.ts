@@ -7,16 +7,16 @@ const ListResult = z.object({ entries: z.array(z.object({ name: z.string(), isDi
 const OkResult = z.object({ ok: z.literal(true) });
 
 export function sandboxRelativePath(path: string) {
-  if (!path || path.includes('\0') || path.includes('\\') || path.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(path) || path.split('/').some(part => part === '..' || !part)) throw new Error('文件路径不在 QQ 沙箱命名空间内');
+  if (!path || path.includes('\0') || path.includes('\\') || path.includes(':') || path.startsWith('/') || path.split('/').some(part => part === '..' || !part)) throw new Error('文件路径不在 QQ 沙箱命名空间内');
   return path;
 }
 
 export class SandboxFiles {
   private closed = false;
-  private constructor(private native: PluginNativeApi, private handle: string, private maxBytes: number) {}
+  private constructor(private native: PluginNativeApi, private handle: string, private maxBytes: number, readonly root: string) {}
   static async open(native: PluginNativeApi, root: string, maxBytes: number) {
     const { handle } = OpenResult.parse(await native.invoke('files.sandbox', { action: 'open', root, maxBytes }));
-    return new SandboxFiles(native, handle, maxBytes);
+    return new SandboxFiles(native, handle, maxBytes, root);
   }
   private async invoke(action: string, path?: string, fields: Record<string, unknown> = {}) {
     if (this.closed) throw new Error('QQ 沙箱文件句柄已关闭');

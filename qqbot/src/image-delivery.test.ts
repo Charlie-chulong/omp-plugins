@@ -248,13 +248,14 @@ const riftHeader = Buffer.alloc(13);
 riftHeader.writeUInt32BE(512); riftHeader.writeUInt32BE(512, 4); riftHeader[8] = 8; riftHeader[9] = 2;
 const riftPng = Buffer.concat([png.subarray(0, 8), pngChunk('IHDR', riftHeader), pngChunk('IDAT', deflateSync(Buffer.alloc(512 * (1 + 512 * 3)))), pngChunk('IEND', Buffer.alloc(0))]);
 
-async function sceneFixture(mode: 'automatic' | 'waiting' | 'approval' = 'automatic') {
+async function sceneFixture(mode: 'automatic' | 'waiting' | 'approval' = 'automatic', sandboxEnabled = true) {
   const base = await fixture();
+  if(!sandboxEnabled){await base.store.mutate(state=>{state.config.sandboxEnabled=false;});base.route.peer.sandbox=undefined;}
   const started = Promise.withResolvers<void>();
   const shown = Promise.withResolvers<void>();
   let parentStatus: 'idle' | 'closed' = 'idle';
   const parent = {
-    id: 'chat-parent', configuration: vi.fn(async () => ({ provider: 'omp/chat-model', thinkingOptionId: 'high', featureValues: { imageGeneration: true }, cwd: base.root, sandbox: { root: base.root } })),
+    id: 'chat-parent', configuration: vi.fn(async () => ({ provider: 'omp/chat-model', thinkingOptionId: 'high', featureValues: { imageGeneration: true }, cwd: base.root, sandbox: sandboxEnabled ? { root: base.root } : undefined })),
     refresh: vi.fn(async () => ({ agent: { id: 'chat-parent', status: parentStatus }, project: null })),
     setModel: vi.fn(async (model: string | null) => {
       if (model !== 'chat-model') throw new Error('Parent recovery changed its saved model');
@@ -381,6 +382,25 @@ it('ordinary adventure images generate with a closed QQ parent and reuse the sha
   expect(Object.values((await f.store.read()).values.sceneImages)).toEqual([f.children[0]!.path]);
   expect(f.parent.run).not.toHaveBeenCalled(); expect(f.parent.send).not.toHaveBeenCalled(); expect(f.parent.stop).not.toHaveBeenCalled(); expect(f.parent.archive).not.toHaveBeenCalled();
   expect(f.children[0]!.archive).toHaveBeenCalledOnce();
+});
+
+it('drawing from a non-sandbox QQ parent still creates and confirms an isolated image child',async()=>{
+  const f=await sceneFixture('automatic',false);
+  expect(await f.get()).toEqual(riftPng);
+  expect(f.create.mock.calls[0]?.[0].config).toMatchObject({modeId:'ask',sandbox:{root:f.root,javascript:false,imageGeneration:true},mcpServers:{}});
+  expect(f.create.mock.calls[0]?.[0].config).not.toHaveProperty('toolPolicy');
+  expect(f.children[0]?.archive).toHaveBeenCalledOnce();expect(f.parent.stop).not.toHaveBeenCalled();
+});
+
+it.each(['javascript','network'] as const)('drawing refuses an unexpected %s capability before prompting even with parent isolation disabled',async capability=>{
+  const f=await sceneFixture('automatic',false);const originalCreate=f.create.getMockImplementation()!;
+  f.create.mockImplementationOnce(async options=>{
+    const handle=await originalCreate(options);const child=f.children[0]!;
+    child.observation.snapshot={...child.observation.snapshot,sandbox:{root:f.root,imageGeneration:true,...(capability==='javascript'?{javascript:true}:{network:'public' as const})}};
+    return handle;
+  });
+  await expect(f.get()).rejects.toThrow('沙箱或空闲状态未确认');
+  expect(f.children[0]?.run).not.toHaveBeenCalled();expect(f.children[0]?.stop).toHaveBeenCalledOnce();expect(f.children[0]?.archive).toHaveBeenCalledOnce();
 });
 
 it.each(['title', 'description'] as const)('rift cache redraws changed visible %s and still reuses the unchanged scene', async field => {

@@ -4,7 +4,7 @@ import { AccessSchema, ConfigSchema, MemberSchema, AgentPresetSchema, OpenId, pe
 const Legacy = z.object({ appId:z.string().optional(),appSecret:z.string().optional(),provider:z.string().optional(),model:z.string().optional(),preset:z.string().optional(),cwd:z.string().optional(),access:z.object({c2cMode:z.enum(['open','allowlist','disabled']).optional(),groupMode:z.enum(['open','allowlist','disabled']).optional(),commandMode:z.enum(['open','allowlist','disabled']).optional(),c2cAllow:z.array(OpenId).optional(),groupAllow:z.array(OpenId).optional()}).optional() }).passthrough();
 const Members = z.object({version:z.literal(1),appId:z.string(),owners:z.array(OpenId),profiles:z.record(z.string(),z.object({nickname:z.string(),scene:z.enum(['c2c','group']),sceneName:z.string(),claimedAt:z.number().int().nonnegative()}))}).strict();
 const Preferences = z.object({overrides:z.record(z.string(),z.object({provider:z.string(),model:z.string()})).default({}),presets:z.record(z.string(),z.string()).default({}),sessionIds:z.record(z.string(),z.string()).default({})}).strict();
-const transferable = ['appId','sandboxPath','requireMention','groupPrompt','directPrompt','textChunkLimit','streaming','maxQueue','processingTimeoutMs','askTimeoutMs','historyLimit','media','showToolResults'] as const;
+const transferable = ['appId','sandboxEnabled','sandboxPath','requireMention','groupPrompt','directPrompt','textChunkLimit','streaming','maxQueue','processingTimeoutMs','askTimeoutMs','historyLimit','media','showToolResults'] as const;
 
 export function importDsh(document:string,state:State){
   const doc=parseDocument(document,{uniqueKeys:true});

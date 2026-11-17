@@ -10,7 +10,7 @@ export const AccessMode = z.enum(['open', 'allowlist', 'disabled']);
 export const AgentPresetSchema = z.object({
   name: z.string().trim().min(1).max(80),
   config: z.object({ provider: z.string().min(1), modeId: z.string().optional(), thinkingOptionId: z.string().optional(), systemPrompt: z.string().optional(), toolPolicy: z.object({ preapproved: z.array(z.never()).max(0) }).strict().optional() }).strict(),
-  qq: z.object({ prompt: z.string().default(''), skills: z.array(z.never()).max(0, 'QQ 沙箱不允许加载宿主 skill').default([]), tools: z.array(z.never()).max(0, 'QQ 沙箱不允许加载宿主工具，包括 qqbot_send_file').default([]) }).strict().default({ prompt: '', skills: [], tools: [] }),
+  qq: z.object({ prompt: z.string().default(''), skills: z.array(z.never()).max(0, 'QQ preset 不允许加载额外宿主 skill').default([]), tools: z.array(z.never()).max(0, 'QQ preset 不允许加载额外宿主工具').default([]) }).strict().default({ prompt: '', skills: [], tools: [] }),
 }).strict();
 const DEFAULT_GAME_ENGINE_DIRECTORY = '~/.omp/qqbot-games';
 export const ConfigSchema = z.preprocess(value => {
@@ -18,6 +18,7 @@ export const ConfigSchema = z.preprocess(value => {
   const { cwd, ...config } = value as Record<string, unknown>;
   return { ...config, sandboxPath: config.sandboxPath ?? cwd };
 }, z.object({
+  sandboxEnabled: z.boolean().default(true),
   appId: z.string().default(''), sandboxPath: z.string().trim().refine(path => !path.includes('\0'), '沙箱路径不能包含 NUL').default(''), defaultPreset: z.string().default('default'),
   sandboxCapabilities: z.object({ javascript: z.boolean().default(false), network: z.boolean().default(false), imageGeneration: z.boolean().default(false) }).strict().default(() => ({ javascript: false, network: false, imageGeneration: false })),
   game: z.object({ enabled: z.boolean().default(false), engineDirectory: z.string().trim().refine(path => !path.includes('\0'), '引擎路径不能包含 NUL').transform(path => path || DEFAULT_GAME_ENGINE_DIRECTORY).default(DEFAULT_GAME_ENGINE_DIRECTORY) }).strict().default(() => ({ enabled: false, engineDirectory: DEFAULT_GAME_ENGINE_DIRECTORY })),
@@ -71,7 +72,7 @@ export const StateSchema = z.preprocess(value => {
     }
     return false;
   });
-  const notice = 'QQ 强制沙箱迁移已移除旧 preset 的宿主 skills、tools、MCP 与运行选项；模型、prompt、账号与历史保留。';
+  const notice = 'QQ preset 迁移已移除旧 preset 的宿主 skills、tools、MCP 与运行选项；模型、prompt、账号与历史保留。';
   return { ...state,
     ...(riftImages === undefined ? {} : { sceneImages: { ...riftImages as Record<string, string>, ...state.sceneImages as Record<string, string> } }),
     ...(removed && (state.importReport === undefined || Array.isArray(state.importReport)) ? { importReport: [...new Set([...(state.importReport as string[] ?? []), notice])] } : {}),

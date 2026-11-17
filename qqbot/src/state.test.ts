@@ -3,6 +3,12 @@ import type { PluginStorage } from '@omp-desktop/plugin';
 import { StateSchema, ConfigSchema, AgentPresetSchema, StateStore, Pairing, switchAccount, peerKey, permitted } from './state.ts';
 function memoryStorage(): PluginStorage { let revision=0;let values:Record<string,unknown>={};return {async get<T>(){return{revision,values:structuredClone(values) as T};},async patch<T>(patch:Partial<T>,expected:number){if(expected!==revision)throw new Error('STORAGE_REVISION_CONFLICT');values={...values,...structuredClone(patch)};return{revision:++revision,values:structuredClone(values) as T};}}; }
 describe('QQ scoped state',()=>{
+  it('defaults legacy state to sandbox enabled and accepts only a top-level boolean toggle',()=>{
+    expect(StateSchema.parse({config:{appId:'saved-app',cwd:'/legacy-root'}}).config).toMatchObject({sandboxEnabled:true,sandboxPath:'/legacy-root'});
+    expect(ConfigSchema.parse({sandboxEnabled:false}).sandboxEnabled).toBe(false);
+    for(const value of [null,'false',0])expect(()=>ConfigSchema.parse({sandboxEnabled:value})).toThrow();
+    for(const sandbox of [null,{root:'/elsewhere'}])expect(()=>ConfigSchema.parse({sandboxEnabled:false,presets:[{name:'default',config:{provider:'omp',sandbox}}]})).toThrow();
+  });
   it('keys mapping by AppID, scope and OpenID without assigning DSH IDs',()=>{expect(peerKey('a','c2c','same')).not.toBe(peerKey('a','group','same'));expect(peerKey('a','c2c','same')).not.toBe(peerKey('b','c2c','same'));});
   it('empty allowlist and disabled access deny while open access admits',()=>{expect(permitted('allowlist',[],'sender')).toBe(false);expect(permitted('disabled',[],'sender')).toBe(false);expect(permitted('open',[],'sender')).toBe(true);});
   it('switching bot accounts preserves original lists without authorizing them on another account',()=>{const state=StateSchema.parse({config:{appId:'first'},access:{owners:[{openid:'owner-first',scene:'c2c',claimedAt:1}]}});switchAccount(state,'second');expect(state.access.owners).toEqual([]);switchAccount(state,'first');expect(state.access.owners[0]?.openid).toBe('owner-first');});

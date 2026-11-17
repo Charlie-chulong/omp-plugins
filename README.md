@@ -62,6 +62,16 @@ Directory loading uses the service's `setup` and `manage` exports. The host inje
 
 Creation controls read provider data with `agents.events`; creating a new workspace and conversation requires `agents.create`, including while the plugin is disabled. Review newly declared permissions after updating an existing installation. Opening Settings reads creation context without creating an authoring workspace; only **Create with OMP** prepares one.
 
+## QQ sandbox settings
+
+Open **QQ 连接 → QQ 沙箱**. The **沙箱** switch and JSON editor share one draft; click **保存配置** to apply it. `sandboxEnabled` defaults to `true`, including saved configurations that omit it. Enabled agents keep the dedicated native sandbox and use `ask` mode. JavaScript, public network requests, and image generation remain explicit capabilities; presets cannot override the top-level switch or grant tools preapproval.
+
+Setting `sandboxEnabled` to `false` creates an ordinary host agent without `config.sandbox`. Its normal host tools can access files outside the QQ directory and run system commands, subject to the usual `ask` permissions; no permission is automatically approved. Restrict private/group access to trusted allowlists before disabling isolation. Model, thinking, and prompt preferences remain unchanged.
+
+Saving either toggle direction, a directory change, or capability changes retires old routes and stops their agents before replacement. Delayed messages, permission cards, game callbacks, and stale agent-creation results cannot deliver through the replaced generation. Desktop conversation history, account credentials, owner/access lists, model selections, and game saves remain intact.
+
+QQ attachments, presented-file uploads, and game images always use a pinned `SandboxFiles` handle for the dedicated directory; `sendFile.extraRoots` never widens it. With isolation disabled, text connection and ordinary agent creation do not open the native sandbox. Media and restricted game children open it only when needed and report an explicit failure if the secure filesystem is unavailable. Review and drawing children remain independently sandboxed even when the parent is an ordinary host agent.
+
 ## QQ message completion
 
 QQ conversations share a serial queue per peer. Timeline sequence numbers belong to an epoch; idle resume or history reconstruction can renumber them. The gateway resets its sequence and revision caches when the epoch changes and recognizes submitted inputs by `clientMessageId`, including lower-sequence events. Completing and delivering a reply releases the next queued message unless native context maintenance is required. Static delivery errors reject the input with the original error instead of silently reporting success; the generated reply remains in the Desktop conversation.
@@ -74,7 +84,7 @@ Live assistant timeline rows are incremental fragments, not cumulative snapshots
 
 The original QQ envelope, attachments, and vision input are sent once per admitted message. Member-query and multi-step game continuations carry only the latest host feedback and engine-provided context. QQ identity rules belong to the plugin; gameplay rules and the game protocol version come from the external engine and are installed in the agent's system prompt.
 
-After plugin reload, a safe legacy conversation stays attached while its current turn runs. Its next admitted QQ message waits for that turn, requests a silent bounded handoff, and creates a new agent with the current protocol and latest peer model/preset selections. The handoff retains confirmed memory, unfinished requests, complete relevant OpenIDs, and necessary attachment paths; it is consumed by the first accepted input. Old Desktop history and sandbox files remain available. Invalid handoffs leave the old conversation intact; `/reset` starts a new conversation without that handoff. Sandbox or capability changes still retire unsafe agents immediately.
+After plugin reload, a safe legacy conversation stays attached while its current turn runs. Its next admitted QQ message waits for that turn, requests a silent bounded handoff, and creates a new agent with the current protocol and latest peer model/preset selections. The handoff retains confirmed memory, unfinished requests, complete relevant OpenIDs, and necessary attachment paths; it is consumed by the first accepted input. Old Desktop history and sandbox files remain available. Invalid handoffs leave the old conversation intact; `/reset` starts a new conversation without that handoff. Sandbox mode, directory, or capability changes retire old agents immediately.
 
 Configure automatic native compression in the existing JSON editor:
 
@@ -106,7 +116,7 @@ Results contain `group_openid`, `members`, `source`, and `complete`. The learned
 
 The directory is stored in host-scoped plugin settings as `groupMembers`, keyed by account and group. Only admitted group messages are observed, including non-mention messages QQ delivers. Learning identities never grants access or command permissions. Quote caches are conversation-scoped; unavailable authors are labeled explicitly.
 
-Trusted host clients can invoke `qqbot.group-members` with `{agentId, nickname?, member_openid?, refresh?}`. The persisted agent mapping selects the current QQ group; private chats, foreign hosts, revoked groups, and replaced mappings are rejected. QQ agents retain their mandatory sandbox: this RPC is not exposed as a model-accessible host tool or MCP connection.
+Trusted host clients can invoke `qqbot.group-members` with `{agentId, nickname?, member_openid?, refresh?}`. The persisted agent mapping selects the current QQ group; private chats, foreign hosts, revoked groups, and replaced mappings are rejected. This RPC is not exposed as a model-accessible host tool or MCP connection; changing sandbox mode does not grant access to other groups.
 
 ## QQ external game integration
 
@@ -118,7 +128,7 @@ The game implementation lives outside the plugin, by default in `~/.omp/qqbot-ga
 
 `engineDirectory` may be omitted or left empty to use the default. A custom value must be an absolute or `~/` path outside the QQ sandbox. The loader resolves the canonical `engine.js` and CommonJS `createGame(options).host` API at startup. It loads the external entry at runtime rather than bundling game code. Missing entries or incomplete host APIs fail explicitly.
 
-The external engine owns gameplay commands and aliases, rules and numerical thresholds, player data structures, context and receipt interpretation, target selection, destructive-action confirmation, model-review policy, and scene validity. Its standalone `createGame(options)` entry remains usable by ordinary Node consumers. QQBot owns QQ messages and native mentions, access control, peer queues, callback ownership, sandboxed model execution, and media delivery.
+The external engine owns gameplay commands and aliases, rules and numerical thresholds, player data structures, context and receipt interpretation, target selection, destructive-action confirmation, model-review policy, and scene validity. Its standalone `createGame(options)` entry remains usable by ordinary Node consumers. QQBot owns QQ messages and native mentions, access control, peer queues, callback ownership, agent routing, independently sandboxed review/drawing children, and media delivery.
 
 The generic host contract is described by `qqbot/src/game-api.ts` and the external engine's `host.d.ts`:
 
@@ -153,9 +163,9 @@ The combined Markdown message contains the native image, unchanged scene text, a
 
 Uploads use QQ's [material-management API](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html) and `qqbot-media://` references. Up to 64 owned references are retained per account; sends lease their references, and eviction deletes only owned materials, never original PNGs. Explicit image-resource rejection falls back to text, while an unknown final-send outcome is not retried.
 
-### Model children retain the QQ security boundary
+### Game children retain independent sandbox isolation
 
-Review and drawing children belong to the original QQ root and workspace, without inheriting its conversation history. A closed root is restored with its saved model selection before child creation. Review children use `ask` mode, clear MCP and parent tool preapprovals, and deny all tool permissions. Drawing children retain only the existing sandbox root and native image permission; approvals use the requester's QQ cards.
+Review and drawing children belong to the original QQ root and workspace, without inheriting its conversation history. A closed root is restored with its saved model selection before child creation. Review children keep a dedicated sandbox, use `ask` mode, clear MCP and parent tool preapprovals, and deny all tool permissions. Drawing children keep only the dedicated sandbox root and native image permission; approvals use the requester's QQ cards. The gateway confirms each child's actual sandbox before submitting work, including when the parent has sandbox isolation disabled.
 
 Canonical review output returns to the engine for validation, not to QQ or as a parent completion notification. Children are archived after completion or failure. Cancellation, timeout, `/stop`, or route replacement discards results; delayed cleanup cannot hold the QQ queue beyond the review deadline.
 

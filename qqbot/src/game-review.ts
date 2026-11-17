@@ -70,6 +70,7 @@ export async function runGameReview(options: GameReviewOptions): Promise<Assista
     const parentConfig = await wait(gameParentConfiguration(parent));
     check();
     // OMP uses ask/always-ask; exact MCP preapproval policies are unsupported.
+    if (!config.sandbox || config.sandbox.root !== cwd) throw new Error('游戏评审必须使用 QQ 专用目录的独立沙箱。');
     const { toolPolicy: _chatToolPolicy, ...reviewConfig } = config;
     creating = omp.agents.create({
       parent, cwd, background: true, notifyOnFinish: false,
@@ -95,6 +96,8 @@ export async function runGameReview(options: GameReviewOptions): Promise<Assista
     }).then(value => { observation = value; return value; });
     await wait(observing);
     check();
+    const sandbox = observation!.snapshot.sandbox;
+    if (sandbox?.root !== cwd || sandbox.javascript === true || sandbox.network === 'public' || sandbox.imageGeneration === true || observation!.snapshot.activeTurn) throw new Error('游戏评审子会话沙箱或空闲状态未确认。');
     for (const permission of observation!.snapshot.pendingPermissions) deny(permission.id);
     check();
 

@@ -27,12 +27,12 @@ interface AgentDirectoryFixture {
   pageInfo: { nextCursor: string | null; prevCursor: null; hasMore: boolean };
 }
 interface DownloadedSandboxAttachment { path: string; relativePath: string; mimeType: string; size: number }
-async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = false, sandboxCapabilities?: { javascript: boolean; network: boolean; imageGeneration?: boolean }, gameEnabled = false, engineDirectory = gameEnabled ? testEngineDirectory : '') {
+async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = false, sandboxCapabilities?: { javascript: boolean; network: boolean; imageGeneration?: boolean }, gameEnabled = false, engineDirectory = gameEnabled ? testEngineDirectory : '', sandboxEnabled = true) {
   const directory = await mkdtemp(join(tmpdir(), 'qq-sandbox-'));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const root = await realpath(directory);
   const key = peerKey('saved-app', 'c2c', 'peer');
-  let values = StateSchema.parse({ config: { appId: 'saved-app', sandboxPath: sandboxPath ?? root, sandboxCapabilities, streaming:false,autoCompactTokens:0,game: { enabled: gameEnabled, engineDirectory }, sendFile: { sendPresentedFiles: presentedFiles, extraRoots: ['/outside'] }, presets: [{ name: 'default', config: { provider, modeId: 'full', thinkingOptionId: 'high', systemPrompt: 'Keep prompt' }, qq: { prompt: 'QQ context' } }] }, modelSelections: { [key]: 'provider/model' }, credentialVersions: { 'saved-app': 1 } });
+  let values = StateSchema.parse({ config: { appId: 'saved-app', sandboxEnabled, sandboxPath: sandboxPath ?? root, sandboxCapabilities, streaming:false,autoCompactTokens:0,game: { enabled: gameEnabled, engineDirectory }, sendFile: { sendPresentedFiles: presentedFiles, extraRoots: ['/outside'] }, presets: [{ name: 'default', config: { provider, modeId: 'full', thinkingOptionId: 'high', systemPrompt: 'Keep prompt' }, qq: { prompt: 'QQ context' } }] }, modelSelections: { [key]: 'provider/model' }, credentialVersions: { 'saved-app': 1 } });
   let revision = 0;
   const storage = { get: async () => ({ revision, values: structuredClone(values) }), patch: async (patch: unknown, expected: number) => { if (expected !== revision) throw new Error('STORAGE_REVISION_CONFLICT'); values = StateSchema.parse(patch); return { revision: ++revision, values }; } } as unknown as PluginStorage;
   const store = new StateStore(storage);
@@ -40,7 +40,7 @@ async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = 
   const createdAgents: AgentDirectoryFixture['entries'] = [];
   const list = vi.fn(async (_options?: { page?: { cursor?: string } }): Promise<AgentDirectoryFixture> => ({ entries: [await old.refresh(), ...createdAgents], pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } }));
   const unsubscribe = vi.fn();
-  const fresh = { id: 'new-agent', stop: vi.fn(async () => {}), observe: vi.fn(async () => ({ snapshot: { sandbox: { root }, pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe } as unknown as OmpAgentObservation)) };
+  const fresh = { id: 'new-agent', stop: vi.fn(async () => {}), observe: vi.fn(async () => ({ snapshot: { sandbox: sandboxEnabled ? { root } : undefined, pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe } as unknown as OmpAgentObservation)) };
   const create = vi.fn(async (_options: OmpAgentCreateOptions) => fresh as unknown as OmpAgentHandle);
   const occupiedWorkspaces = new Set<string>();
   let workspaceSequence = 0;
@@ -57,7 +57,7 @@ async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = 
   const scope = createActivationScope(1);
   cleanups.push(() => scope.dispose());
   const installation: PluginInstallation = { id: 'installation', packageId: packageMetadata.name, owner: 'daemon', version: packageMetadata.version, generation: scope.generation, enabled: true, declaredCapabilities: packageMetadata.ompDesktop.capabilities, grantedCapabilities: packageMetadata.ompDesktop.capabilities };
-  const omp = createPluginOmpApi({ hostId: 'host', agents: { list, ref: vi.fn(() => old) }, workspaces: { open, create: createWorkspace } } as unknown as OmpApi, installation, scope, { mode: 'active' });
+  const omp = createPluginOmpApi({ hostId: 'host', agents: { list, ref: vi.fn((agent:string|{id:string}) => (typeof agent==='string'?agent:agent.id)===fresh.id?fresh:old) }, workspaces: { open, create: createWorkspace } } as unknown as OmpApi, installation, scope, { mode: 'active' });
   const ctx = { signal: scope.signal, installation, native, omp } as unknown as PluginServiceContext;
   const gateway = new Gateway(ctx, store, new Pairing(store), values.config, 'fixture-secret', { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }, vi.fn());
   cleanups.push(() => gateway.dispose());
@@ -117,7 +117,7 @@ it('invalid legacy handoff leaves the saved conversation intact and never replie
   expect(f.create).not.toHaveBeenCalled();expect(f.old.stop).not.toHaveBeenCalled();expect(delivered).not.toHaveBeenCalled();
 });
 
-it('creates mandatory sandbox with safe approval while preserving saved model and prompts', async () => {
+it('creates the default sandbox with safe approval while preserving saved model and prompts', async () => {
   const f = await fixture();
   const route = await f.internal.getOrCreate('c2c', 'peer');
   expect(f.create.mock.calls[0]?.[0].config).toMatchObject({ cwd: f.root, sandbox: { root: f.root }, modeId: 'ask', provider: 'omp/provider/model', thinkingOptionId: 'high' });
@@ -126,6 +126,79 @@ it('creates mandatory sandbox with safe approval while preserving saved model an
   expect(f.create.mock.calls[0]?.[0].config?.systemPrompt).not.toContain(f.root);
   expect(route.peer.sandbox).toEqual({ root: f.root });
   await expect(f.gateway.sendFile(route.peer.agentId, '../outside', 'file')).rejects.toThrow('qqbot_send_file');
+});
+
+it('disabled sandbox connects and creates a normal ask agent without opening the native filesystem',async()=>{
+  const f=await fixture(undefined,'codex',false,undefined,false,'',false);
+  f.native.invoke.mockRejectedValue(new Error('unsupported secure filesystem'));
+  const started=vi.spyOn(f.internal.bot,'start').mockResolvedValue();
+  await f.gateway.start();
+  const route=await f.internal.getOrCreate('c2c','peer');
+  expect(started).toHaveBeenCalledOnce();expect(f.native.invoke).not.toHaveBeenCalled();
+  expect(f.create.mock.calls[0]?.[0].config).toMatchObject({modeId:'ask',provider:'codex/provider/model',thinkingOptionId:'high'});
+  expect(f.create.mock.calls[0]?.[0].config).not.toHaveProperty('sandbox');
+  expect(f.create.mock.calls[0]?.[0].config).not.toHaveProperty('mcpServers');
+  expect(f.create.mock.calls[0]?.[0].config?.systemPrompt).toContain('Keep prompt');
+  expect(route.peer.sandbox).toBeUndefined();
+});
+
+it.each([false,true])('switches sandbox to %s after retiring the old route and stops stale delivery',async enabled=>{
+  const f=await fixture(undefined,'omp',false,undefined,false,'',!enabled);
+  const oldRoute=await f.internal.getOrCreate('c2c','peer');
+  const before=(await f.store.read()).values;
+  await f.store.mutate(state=>{state.config.sandboxEnabled=enabled;});
+  const sent=vi.spyOn(f.internal.sender,'sendMarkdown').mockResolvedValue();
+  await f.internal.event(oldRoute,{event:{type:'turn_failed',error:'stale output'}} as OmpAgentStream);
+  expect(sent).not.toHaveBeenCalled();
+  await expect(f.internal.deliveryRoute.run(oldRoute,()=>f.internal.bot.apiClient.request('token','POST','/v2/users/peer/messages',{}))).rejects.toThrow('沙箱配置');
+  await f.gateway.retire();
+  expect(f.fresh.stop).toHaveBeenCalledOnce();expect(f.internal.routes.size).toBe(0);expect(f.unsubscribe).toHaveBeenCalledOnce();
+  const nextSandbox=enabled?{root:f.root}:undefined;
+  const replacement={...f.fresh,id:'replacement-agent',stop:vi.fn(async()=>{}),observe:vi.fn(async()=>({snapshot:{sandbox:nextSandbox,pendingPermissions:[],activeTurn:null},timeline:{window:{maxSeq:0},entries:[]},unsubscribe:vi.fn()} as unknown as OmpAgentObservation))};
+  f.create.mockResolvedValue(replacement as unknown as OmpAgentHandle);
+  const config=(await f.store.read()).values.config;
+  const gateway=new Gateway(f.ctx,f.store,new Pairing(f.store),config,'fixture-secret',{debug:vi.fn(),info:vi.fn(),warn:vi.fn(),error:vi.fn()},vi.fn());
+  cleanups.push(()=>gateway.dispose());
+  const internal=gateway as unknown as typeof f.internal;vi.spyOn(internal.bot,'start').mockResolvedValue();
+  await gateway.start();
+  const after=(await f.store.read()).values;
+  expect(after.peers[f.key]).toMatchObject({agentId:replacement.id,cwd:f.root});
+  expect(after.peers[f.key]?.sandbox).toEqual(nextSandbox);
+  expect(f.fresh.stop.mock.invocationCallOrder[0]).toBeLessThan(f.create.mock.invocationCallOrder[1]!);
+  expect(after.modelSelections).toEqual(before.modelSelections);expect(after.presetSelections).toEqual(before.presetSelections);
+  expect(after.access).toEqual(before.access);expect(after.accountAccess).toEqual(before.accountAccess);expect(after.credentialVersions).toEqual(before.credentialVersions);
+  await f.internal.event(oldRoute,{event:{type:'turn_failed',error:'late old output'}} as OmpAgentStream);
+  expect(sent).not.toHaveBeenCalled();
+});
+
+it('rejects an observer that leaves sandbox enabled after opt-out without replacing the saved mapping',async()=>{
+  const f=await fixture(undefined,'omp',false,undefined,false,'',false);
+  await f.store.mutate(state=>{state.peers[f.key]=f.saved({root:f.root});});
+  f.old.refresh.mockResolvedValue({agent:{id:f.old.id,sandbox:{root:f.root}}});
+  f.fresh.observe.mockResolvedValue({snapshot:{sandbox:{root:f.root},pendingPermissions:[],activeTurn:null},timeline:{window:{maxSeq:0},entries:[]},unsubscribe:f.unsubscribe} as unknown as OmpAgentObservation);
+  await expect(f.internal.getOrCreate('c2c','peer')).rejects.toThrow('开启或关闭状态');
+  expect(f.old.stop).toHaveBeenCalledOnce();expect(f.fresh.stop).toHaveBeenCalledOnce();
+  expect((await f.store.read()).values.peers[f.key]?.agentId).toBe(f.old.id);expect(f.internal.routes.size).toBe(0);expect(f.native.invoke).not.toHaveBeenCalled();
+});
+
+it.each([false,true])('opt-out media still uses a lazy safe filesystem (available=%s)',async available=>{
+  const f=await fixture(undefined,'omp',true,undefined,false,'',false);
+  const route=await f.internal.getOrCreate('c2c','peer');expect(f.native.invoke).not.toHaveBeenCalled();
+  if(!available)f.native.invoke.mockRejectedValueOnce(new Error('unsupported secure filesystem'));
+  const send=vi.spyOn(f.internal.bot,'sendImage').mockResolvedValue({});
+  const delivery=f.internal.deliverFile(route,`${f.root}/inside.png`,'image',{scope:'c2c',targetId:'peer'});
+  if(available){await delivery;expect(send.mock.calls[0]?.[1]).toEqual({buffer:Buffer.from('inside-media')});await expect(f.internal.deliverFile(route,'/outside/private.png','image',{scope:'c2c',targetId:'peer'})).rejects.toThrow('沙箱内');expect(send).toHaveBeenCalledOnce();}
+  else{await expect(delivery).rejects.toThrow('QQ 安全文件系统不可用');expect(send).not.toHaveBeenCalled();}
+  expect(f.native.invoke).toHaveBeenCalledWith('files.sandbox',{action:'open',root:f.root,maxBytes:200*1024*1024});
+});
+
+it('opt-out attachments fail explicitly before agent input when native isolation is unavailable',async()=>{
+  const f=await fixture(undefined,'omp',false,undefined,false,'',false);await f.internal.getOrCreate('c2c','peer');
+  f.native.invoke.mockRejectedValueOnce(new Error('unsupported secure filesystem'));
+  const send=vi.fn();Object.assign(f.fresh,{send});
+  const internal=f.gateway as unknown as {message(context:unknown):Promise<void>};
+  await expect(internal.message({replyTarget:{scope:'c2c',targetId:'peer',msgId:'fixture-message'},message:{senderId:'peer',content:'file question',attachments:[{filename:'input.txt',content_type:'text/plain',size:1,url:'https://qpic.cn/input.txt'}]},state:{envelope:'file question'}})).rejects.toThrow('QQ 安全文件系统不可用');
+  expect(send).not.toHaveBeenCalled();
 });
 
 it('keeps private and group peers independent in one sandbox, including group reset', async () => {
@@ -280,7 +353,7 @@ it('does not recreate or rewrite a peer when its existence query fails', async (
   expect((await f.store.read()).values.peers[f.key]?.agentId).toBe('old-agent');
 });
 
-it.each(['root', 'javascript', 'network', 'imageGeneration'] as const)('does not stop or recreate a peer after lookup outlives a %s config change', async kind => {
+it.each(['root', 'javascript', 'network', 'imageGeneration', 'sandboxEnabled'] as const)('does not stop or recreate a peer after lookup outlives a %s config change', async kind => {
   const f = await fixture();
   await f.store.mutate(state => { state.peers[f.key] = f.saved(); });
   const queried = Promise.withResolvers<void>();
@@ -288,7 +361,7 @@ it.each(['root', 'javascript', 'network', 'imageGeneration'] as const)('does not
   f.list.mockImplementation(() => { queried.resolve(); return pending.promise; });
   const work = f.internal.getOrCreate('c2c', 'peer').catch(error => error);
   await queried.promise;
-  await f.store.mutate(state => { if(kind === 'root')state.config.sandboxPath = join(f.root, 'next'); else state.config.sandboxCapabilities[kind] = true; });
+  await f.store.mutate(state => { if(kind === 'root')state.config.sandboxPath = join(f.root, 'next'); else if(kind==='sandboxEnabled')state.config.sandboxEnabled=false;else state.config.sandboxCapabilities[kind] = true; });
   pending.resolve({ entries: [await f.old.refresh()], pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } });
   expect(await work).toBeInstanceOf(Error);
   expect(f.old.stop).not.toHaveBeenCalled();
@@ -296,7 +369,7 @@ it.each(['root', 'javascript', 'network', 'imageGeneration'] as const)('does not
   expect((await f.store.read()).values.peers[f.key]?.agentId).toBe('old-agent');
 });
 
-it('stops a stale create after root change and never stores or attaches it', async () => {
+it.each(['root','mode'] as const)('stops a stale create after %s change and never stores or attaches it', async change => {
   const f = await fixture();
   const created = Promise.withResolvers<OmpAgentHandle>();
   const called = Promise.withResolvers<void>();
@@ -304,7 +377,7 @@ it('stops a stale create after root change and never stores or attaches it', asy
   const work = f.internal.getOrCreate('c2c', 'peer');
   const settled = work.catch(error => error);
   await called.promise;
-  await f.store.mutate(state => { state.config.sandboxPath = join(f.root, 'next'); });
+  await f.store.mutate(state => { if(change==='root')state.config.sandboxPath = join(f.root, 'next');else state.config.sandboxEnabled=false; });
   created.resolve(f.fresh as unknown as OmpAgentHandle);
   expect(await settled).toBeInstanceOf(Error);
   expect(f.fresh.stop).toHaveBeenCalled();
@@ -320,6 +393,17 @@ it('rejects unconfirmed sandbox observation instead of reusing the route', async
   expect(f.fresh.stop).toHaveBeenCalled();
   expect(f.unsubscribe).toHaveBeenCalled();
   expect(f.internal.routes.size).toBe(0);
+});
+
+it.each([false,true])('a toggle while observing sandbox=%s stops the stale new agent before publishing its mapping',async enabled=>{
+  const f=await fixture(undefined,'omp',false,undefined,false,'',enabled);
+  const called=Promise.withResolvers<void>();const observing=Promise.withResolvers<OmpAgentObservation>();
+  f.fresh.observe.mockImplementation(()=>{called.resolve();return observing.promise;});
+  const work=f.internal.getOrCreate('c2c','peer').catch(error=>error);await called.promise;
+  await f.store.mutate(state=>{state.config.sandboxEnabled=!enabled;});
+  observing.resolve({snapshot:{sandbox:enabled?{root:f.root}:undefined,pendingPermissions:[],activeTurn:null},timeline:{window:{maxSeq:0},entries:[]},unsubscribe:f.unsubscribe} as unknown as OmpAgentObservation);
+  expect(await work).toBeInstanceOf(Error);expect(f.fresh.stop).toHaveBeenCalledOnce();expect(f.unsubscribe).toHaveBeenCalledOnce();
+  expect((await f.store.read()).values.peers[f.key]).toBeUndefined();expect(f.internal.routes.size).toBe(0);
 });
 
 it('blocks retired route events and SDK retry HTTP requests', async () => {
@@ -389,21 +473,21 @@ it('presented file uploads require explicit opt-in', async () => {
   expect(send).not.toHaveBeenCalled();
 });
 
-it.each(['root', 'engineDirectory', 'javascript', 'network', 'imageGeneration'] as const)('%s change prevents a late model acknowledgement from overwriting peer preference', async change => {
+it.each(['root', 'engineDirectory', 'javascript', 'network', 'imageGeneration', 'sandboxEnabled'] as const)('%s change prevents a late model acknowledgement from overwriting peer preference', async change => {
   const f=await fixture();await f.internal.getOrCreate('c2c','peer');
   const called=Promise.withResolvers<void>();const acknowledged=Promise.withResolvers<void>();
   Object.assign(f.fresh,{setModel:vi.fn(()=>{called.resolve();return acknowledged.promise;})});
   const internal=f.gateway as unknown as {command(context:unknown,text:string):Promise<void>};
   const work=internal.command({replyTarget:{scope:'c2c',targetId:'peer'},message:{senderId:'peer'}},'/model provider/new-model');
   const settled=work.catch(error=>error);await called.promise;
-  await f.store.mutate(s=>{if(change==='root')s.config.sandboxPath=join(f.root,'next');else if(change==='engineDirectory')s.config.game.engineDirectory=testEngineDirectory;else s.config.sandboxCapabilities[change]=true;});acknowledged.resolve();
+  await f.store.mutate(s=>{if(change==='root')s.config.sandboxPath=join(f.root,'next');else if(change==='engineDirectory')s.config.game.engineDirectory=testEngineDirectory;else if(change==='sandboxEnabled')s.config.sandboxEnabled=false;else s.config.sandboxCapabilities[change]=true;});acknowledged.resolve();
   expect(await settled).toBeInstanceOf(Error);
   expect((await f.store.read()).values.modelSelections[f.key]).toBe('provider/model');
 });
 
 it('unavailable pinned filesystem stops QQ creation without falling back to host files', async () => {
   const f=await fixture();f.native.invoke.mockRejectedValueOnce(new Error('unsupported secure filesystem'));
-  await expect(f.internal.getOrCreate('c2c','peer')).rejects.toThrow('unsupported secure filesystem');
+  await expect(f.internal.getOrCreate('c2c','peer')).rejects.toThrow('QQ 安全文件系统不可用');
   expect(f.create).not.toHaveBeenCalled();expect(f.internal.routes.size).toBe(0);
 });
 

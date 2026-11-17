@@ -1,16 +1,16 @@
-import { basename, extname, isAbsolute, relative, resolve } from 'node:path';
+import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SandboxFiles, sandboxRelativePath } from './sandbox-files.ts';
 import type { Peer, Config } from './state.ts';
 export function within(root: string, path: string) { const p = relative(root, path); return p === '' || (!p.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && p !== '..' && !isAbsolute(p)); }
 export async function allowedFile(path: string, peer: Peer, config: Config, files: SandboxFiles): Promise<Buffer> {
-  if (!peer.sandbox || peer.sandbox.root !== peer.cwd) throw new Error('QQ 文件投递需要已确认的沙箱');
-  if(path.includes('\0')||path.includes('\\')||path.split('/').includes('..'))throw new Error('文件路径不在 QQ 沙箱命名空间内');
+  if (files.root !== peer.cwd) throw new Error('QQ 文件投递需要当前专用目录的安全句柄');
+  if(path.includes('\0')||path.split(/[\\/]/).includes('..'))throw new Error('文件路径不在 QQ 沙箱命名空间内');
   // Absolute paths are accepted only from trusted Desktop presented-file metadata.
   // Reduce them to a relative namespace before the native descriptor-bound read.
   if (isAbsolute(path)) {
-    if (!within(peer.sandbox.root, path)) throw new Error('文件不在 QQ 沙箱内');
-    path = relative(peer.sandbox.root, path);
+    if (!within(files.root, path)) throw new Error('文件不在 QQ 沙箱内');
+    path = relative(files.root, path).split(sep).join('/');
   }
   return files.read(sandboxRelativePath(path), config.media.maxMB * 1024 * 1024);
 }
