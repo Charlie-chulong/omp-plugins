@@ -1,0 +1,14 @@
+node_modules/
+dist/
+/.runtime/
+/runtime/
+/artifacts/
+/build/
+__pycache__/
+*.pyc
+*.tgz
+*.obj
+*.lib
+*.exp
+*.pdb
+native/runtime/**/build.cmd
