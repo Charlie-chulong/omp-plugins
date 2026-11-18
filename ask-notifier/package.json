@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-or-later",
   "description": "OMP 等待回答时，通过 QQ 向手机、Pad 或两个设备发送问题与全部选项提醒",
   "type": "module",
-  "files": ["dist", "bridge/*.py", "bridge/requirements.txt", "native/qq", "runtime", "licenses", "scripts/prepare-runtime.mjs", "scripts/build-qq-native.ps1", "准备提醒.cmd", "README.md"],
+  "files": ["dist", "bridge/*.py", "bridge/requirements.txt", "native/qq", "runtime", "scripts/prepare-runtime.mjs", "scripts/build-qq-native.ps1", "准备提醒.cmd", "README.md"],
   "ompDesktop": {
     "apiVersion": 1,
     "id": "wechat-ask-notifier",

@@ -88,4 +88,4 @@ npm run build:qq-native
 
 构建入口为 `scripts/build-qq-native.ps1`。本次设备路由和消息属性更新不改变 C++ 协议或 DLL。
 
-许可证遵循本仓库的 AGPL-3.0-or-later；MinHook 和 lucide-react 分别保留在 `native/qq/minhook/LICENSE.txt`、`licenses/lucide-react-LICENSE` 中的原始许可证。
+插件自身许可证遵循本仓库的 AGPL-3.0-or-later。
