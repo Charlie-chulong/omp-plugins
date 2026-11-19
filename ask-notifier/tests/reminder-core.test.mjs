@@ -46,6 +46,10 @@ function question(id = 'ui_1', body = '要使用哪个方案？') {
       options: [{ label: '方案甲' }, { label: '方案乙' }], recommended: 0, multi: false }] },
   };
 }
+function plan(revision, body) {
+  return { id: 'omp-plan-approval', provider: 'omp', name: 'OmpPlanApproval', kind: 'plan',
+    input: { plan: body }, metadata: revision ? { planMessageId: revision } : {} };
+}
 function agent(id, requests = [question()], extra = {}) {
   return { id, title: `会话-${id}`, cwd: 'C:/测试工程', workspaceId: 'workspace-1',
     pendingPermissions: requests, archivedAt: null, ...extra };
@@ -211,17 +215,94 @@ test('刷新期间已答、归档和排队移除均不发送旧请求', async t 
   assert.equal(f.controller.read().pendingCount, 0);
 });
 
-test('完整保留问题、全部选项、多选、推荐及预览，非问题审批不转发', async t => {
+test('真实待处理请求各提醒一次，问答保留全部选项，审批只发送类型和会话名', async t => {
   const request = question();
   request.input.questions = [{ id: 'features', question: '选择功能', multiSelect: true, allowOther: true,
     options: [{ label: '搜索' }, { label: '导出' }] }];
   request.metadata.questions = [{ id: 'features', recommended: 1,
     options: [{ label: '搜索', description: '搜索全部条目', preview: '搜索预览\n第二行' }, { label: '导出' }] }];
-  const f = fixture(t, { enabled: true, entries: [agent('a', [request, { id: 'tool', kind: 'tool', input: { command: 'private-command' } }])] });
-  await f.controller.start(); await until(() => f.controller.read().lastAttempt?.state === 'submitted');
-  const body = bodyOf(f.calls.send);
-  for (const expected of ['会话-a', '中文工作区', 'C:/测试工程', '选择功能', '可多选', '导出（推荐）', '搜索全部条目', '搜索预览\n第二行', '自定义输入']) assert.ok(body.includes(expected), expected);
-  assert.ok(!body.includes('private-command'));
+  const privateMarker = 'PRIVATE_APPROVAL_CONTENT';
+  const requests = [request, plan('plan-1', privateMarker), ...['tool', 'mode', 'other'].map(kind => ({
+    id: kind, kind, name: privateMarker, title: privateMarker, description: privateMarker,
+    input: { command: privateMarker }, detail: { command: privateMarker },
+    metadata: { toolArgs: { token: privateMarker } },
+    actions: [{ label: privateMarker }],
+  }))];
+  const current = agent('a', requests);
+  const f = fixture(t, { enabled: true, entries: [current] });
+  await f.controller.start(); await until(() => f.calls.finish.length === 1);
+  assert.equal(f.controller.read().pendingCount, 5);
+  const bodies = f.calls.send.map(message => bodyOf([message]));
+  assert.equal(bodies.length, 5);
+  for (const expected of ['会话-a', '中文工作区', 'C:/测试工程', '选择功能', '可多选', '导出（推荐）', '搜索全部条目', '搜索预览\n第二行', '自定义输入']) assert.ok(bodies[0].includes(expected), expected);
+  for (const [index, label] of ['计划待审批', '工具或权限待审批', '模式切换待确认', '有事项待确认'].entries()) {
+    const message = bodies[index + 1];
+    assert.ok(message.includes(label) && message.includes('会话-a') && message.includes('OMP 原会话'));
+    assert.ok(!message.includes('C:/测试工程') && !message.includes(privateMarker));
+  }
+  assert.match(bodies[1], /批准执行.*继续规划/u);
+  f.emit(current); await drain();
+  assert.equal(f.calls.send.length, 5);
+});
+
+test('修改后的同ID计划重新提醒，重复快照和重载不会重复发送，也不保存计划正文', async t => {
+  for (const hasMessageId of [true, false]) {
+    await t.test(hasMessageId ? '计划消息ID' : '缺少消息ID时的版本识别', async subtest => {
+      const file = databaseFile(subtest);
+      const original = agent('plan', [plan(hasMessageId ? 'plan-1' : null, 'PRIVATE_PLAN_ORIGINAL')]);
+      const revised = agent('plan', [plan(hasMessageId ? 'plan-2' : null, 'PRIVATE_PLAN_REVISED')]);
+      const first = fixture(subtest, { file, enabled: true, entries: [original] });
+      await first.controller.start(); await until(() => first.calls.finish.length === 1);
+      first.emit(revised); first.emit(revised);
+      await until(() => first.calls.finish.length === 2);
+      assert.equal(first.calls.send.length, 2);
+      assert.equal(first.controller.read().pendingCount, 1);
+      assert.ok(first.calls.send.every(message => !message.text.includes('PRIVATE_PLAN')));
+      await first.close();
+      assert.ok(!readFileSync(file).includes(Buffer.from('PRIVATE_PLAN')));
+      const next = fixture(subtest, { file, entries: [revised] });
+      await next.controller.start(); await drain();
+      assert.equal(next.calls.send.length, 0);
+      assert.equal(next.controller.read().pendingCount, 1);
+    });
+  }
+});
+
+test('自动通过、普通回复和报错均无待处理卡，不触发QQ', async t => {
+  const f = fixture(t, { enabled: true, entries: [agent('a', [])] });
+  await f.controller.start();
+  f.emit(agent('a', [], { status: 'running' }));
+  f.emit(agent('a', [], { status: 'idle', requiresAttention: true, attentionReason: 'finished' }));
+  f.emit(agent('a', [], { status: 'error', requiresAttention: true, attentionReason: 'error' }));
+  await drain();
+  assert.equal(f.controller.read().pendingCount, 0);
+  assert.equal(f.calls.inspect, 0);
+  assert.deepEqual(f.calls.send, []);
+});
+
+test('旧计划被新版本取代时，已排队的旧版本不再提交', async t => {
+  const gate = deferred();
+  const original = agent('a', [plan('plan-1', '原计划')]);
+  const revised = agent('a', [plan('plan-2', '修改计划')]);
+  const f = fixture(t, { enabled: true, entries: [original], refresh: (_id, count) =>
+    count === 1 ? gate.promise : { agent: revised } });
+  await f.controller.start(); await until(() => f.calls.refresh.length === 1);
+  f.emit(revised);
+  gate.resolve({ agent: original });
+  await until(() => f.calls.finish.length === 1);
+  assert.equal(f.calls.send.length, 1);
+  assert.equal(f.controller.read().pendingCount, 1);
+});
+
+test('手机提交后审批已处理，即使撤回事件尚未到达也不发送Pad', async t => {
+  const current = agent('a', [{ id: 'tool', kind: 'tool' }]);
+  const f = fixture(t, { enabled: true, targetMode: 'both', entries: [current], refresh: (_id, count) =>
+    ({ agent: count === 1 ? current : agent('a', []) }) });
+  await f.controller.start(); await until(() => f.calls.finish.length === 1);
+  assert.deepEqual(f.calls.send.map(value => value.target), ['phone']);
+  assert.equal(f.controller.read().lastAttempt.state, 'partial');
+  assert.equal(f.controller.read().lastAttempt.targets.pad.state, 'skipped');
+  assert.equal(f.controller.read().pendingCount, 0);
 });
 
 test('双端长问题UTF8无截断，每端完整且每设备每段独立标识', async t => {

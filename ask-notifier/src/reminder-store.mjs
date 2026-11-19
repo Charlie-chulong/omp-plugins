@@ -6,7 +6,7 @@ import { dirname } from 'node:path';
 const HISTORY_LIMIT = 256;
 const identifier = () => randomUUID().replaceAll('-', '');
 
-/** Stores identities and delivery outcomes, never question text or answers. */
+/** Stores pending-item identities and outcomes, never request bodies or answers. */
 export function createReminderStore(file) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -114,6 +114,8 @@ export function createReminderStore(file) {
       db.prepare('UPDATE reminder_settings SET enabled = COALESCE(?, enabled), target_mode = COALESCE(?, target_mode) WHERE singleton = 1')
         .run(enabled === undefined ? null : enabled ? 1 : 0, targetMode ?? null);
     },
+    // 'question' is the legacy on-disk name for all live pending items.
+    // requestIds are opaque keys; a plan revision can include a message identity.
     syncAgent(hostId, agentId, agentTitle, requestIds, enabled) {
       transaction(() => {
         const active = db.prepare(`SELECT lifecycle, request_id FROM reminder_requests

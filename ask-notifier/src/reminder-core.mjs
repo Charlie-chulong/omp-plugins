@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const MAX_MESSAGE_BYTES = 4094;
 const identifier = () => randomUUID().replaceAll('-', '');
@@ -9,9 +9,31 @@ const returnToOmp = '请回到 OMP 原会话回答；本插件只提醒，不读
 const abortError = () => Object.assign(new Error('提醒服务已关闭。'), { code: 'REMINDER_CLOSED' });
 const targetLabels = { phone: '手机', pad: 'Pad' };
 
+// OMP reuses its plan approval ID. A new plan message is a new pending item,
+// even when the directory update doesn't show the old card disappearing.
+function requestKey(request) {
+  if (request.kind !== 'plan') return request.id;
+  const messageId = text(request.metadata?.planMessageId);
+  if (messageId) return JSON.stringify([request.id, 'plan-message', messageId]);
+  const plan = text(request.metadata?.planText) || text(request.input?.plan);
+  if (!plan) return request.id;
+  return JSON.stringify([request.id, 'plan-content', createHash('sha256').update(plan).digest('hex')]);
+}
+
+function formatApproval(agent, request) {
+  const action = request.kind === 'plan' ? '计划待审批'
+    : request.kind === 'tool' ? '工具或权限待审批'
+    : request.kind === 'mode' ? '模式切换待确认'
+    : '有事项待确认';
+  const next = request.kind === 'plan' && request.name === 'OmpPlanApproval'
+    ? '请回到 OMP 原会话，选择「批准执行」或「继续规划」。'
+    : '请回到 OMP 原会话查看并处理。';
+  return `【OMP 待你确认】\n会话：${agent.title || '未命名会话'}\n事项：${action}\n\n${next}`;
+}
+
 function secretMarker(value) {
   return record(value) && (value.secret === true || value.isSecret === true
-    || value.type === 'password' || value.inputType === 'password');
+    || value.sensitive === true || value.type === 'password' || value.inputType === 'password');
 }
 
 function questionsOf(request) {
@@ -203,7 +225,7 @@ export class ReminderController {
       this.#unsubscribe?.();
       this.#unsubscribe = null;
       this.#started = false;
-      if (!this.#closed) this.#error = '无法读取 OMP 待回答会话。';
+      if (!this.#closed) this.#error = '无法读取 OMP 待处理会话。';
       throw error;
     } finally {
       this.#initializing = false;
@@ -278,8 +300,7 @@ export class ReminderController {
     if (this.#initializing) this.#seenAgents.add(agent.id);
     if (agent.archivedAt) { this.#remove(agent.id); return; }
     this.#locations.set(agent.id, { workspaceName: project?.workspaceName ?? null });
-    const ids = agent.pendingPermissions.filter((request) => request.kind === 'question').map((request) => request.id);
-    this.#store.syncAgent(this.#hostId, agent.id, agent.title ?? null, ids, this.#enabled);
+    this.#store.syncAgent(this.#hostId, agent.id, agent.title ?? null, agent.pendingPermissions.map(requestKey), this.#enabled);
     this.#stopCancelledDelivery();
   }
 
@@ -375,12 +396,12 @@ export class ReminderController {
     try { result = await this.#await(this.#omp.agents.ref(row.agent_id).refresh()); }
     catch (error) {
       if (this.#closed) throw error;
-      return { error: '无法重新确认 OMP 问题仍在等待回答；已跳过，不自动重试。' };
+      return { error: '无法重新确认 OMP 事项仍待处理；已跳过，不自动重试。' };
     }
     if (!this.#canSend(row)) return null;
     const agent = result?.agent;
     const request = agent && !agent.archivedAt
-      ? agent.pendingPermissions.find((item) => item.kind === 'question' && item.id === row.request_id) : null;
+      ? agent.pendingPermissions.find((item) => requestKey(item) === row.request_id) : null;
     if (!request) {
       this.#store.cancel(row.lifecycle);
       return null;
@@ -429,7 +450,7 @@ export class ReminderController {
       }
       if (this.#closed) return;
       if (!this.#canSend(row)) {
-        finish('skipped', '提醒已停止或 OMP 问题已解决；未提交任何提醒。');
+        finish('skipped', '提醒已停止或 OMP 事项已处理；未提交任何提醒。');
         return;
       }
       if (this.#connection.state !== 'ready') {
@@ -447,25 +468,29 @@ export class ReminderController {
       }
       if (initial) agentTitle = initial.agent.title ?? null;
       const body = row.type === 'test' ? testBody
-        : formatQuestion(initial.agent, this.#locations.get(row.agent_id)?.workspaceName, initial.request);
+        : initial.request.kind === 'question'
+          ? formatQuestion(initial.agent, this.#locations.get(row.agent_id)?.workspaceName, initial.request)
+          : formatApproval(initial.agent, initial.request);
       const parts = splitMessage(body, row.lifecycle);
       totalParts = parts.length;
       initial = null;
       let active = [...routes];
-      for (const [index, part] of parts.entries()) {
-        if (index > 0 && row.type !== 'test') {
-          const current = await this.#refresh(row);
-          if (!current || current.error || !this.#canSend(row)) {
-            finishStopped(current?.error ?? 'OMP 问题已解决；剩余分段不再发送。');
-            return;
-          }
-        }
+      let recheck = false;
+      for (const part of parts) {
         const continuing = [];
         for (const target of active) {
           if (!this.#canSend(row)) {
-            finishStopped('提醒已停止或 OMP 问题已解决；剩余提醒不再发送。');
+            finishStopped('提醒已停止或 OMP 事项已处理；剩余提醒不再发送。');
             return;
           }
+          if (recheck && row.type !== 'test') {
+            const current = await this.#refresh(row);
+            if (!current || current.error) {
+              finishStopped(current?.error ?? 'OMP 事项已处理；剩余提醒不再发送。');
+              return;
+            }
+          }
+          recheck = true;
           const requestId = identifier();
           targets[target] = { state: 'unknown', reason: 'QQ 提交结果尚未确认，不自动重试。' };
           // Each destination/segment has an independent durable fence and request ID.
